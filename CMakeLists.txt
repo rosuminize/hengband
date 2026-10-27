@@ -4,7 +4,13 @@ project(HengbandMobile C)
 # Android用のマクロ定義
 add_definitions(-DUSE_ANDROID)
 
-# ★重要：変愚蛮怒のヘッダーファイル（z-term.h等）があるフォルダの場所をコンパイラに教える
+# ★改良：srcディレクトリだけでなく、その中にあるすべてのサブフォルダもヘッダー検索パスに自動追加する
+file(GLOB_RECURSE HENGBAND_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src/*")
+foreach(DIR ${HENGBAND_INCLUDE_DIRS})
+    if(IS_DIRECTORY ${DIR})
+        include_directories(${DIR})
+    endif()
+endforeach()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # srcフォルダ内のすべてのC言語ファイルを取得
@@ -20,7 +26,7 @@ list(REMOVE_ITEM ALL_SRC_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-cap.c"
 )
 
-# Androidアプリは実行ファイルではなく「共有ライブラリ(libhengband.so)」としてビルドする
+# Androidアプリは共有ライブラリ(libhengband.so)としてビルドする
 add_library(hengband SHARED ${ALL_SRC_FILES})
 
 # Android OSの基本機能と、SDL2ライブラリを紐付ける
