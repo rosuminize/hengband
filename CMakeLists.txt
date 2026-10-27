@@ -1,28 +1,30 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(HengbandMobile C)
 
-# Android用のマクロ定義
+# C言語とC++の両方を有効化
+project(HengbandMobile C CXX)
+
+# 変愚蛮怒は現代的なC++20で記述されているため標準規格を指定
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_definitions(-DUSE_ANDROID)
 
-# ヘッダーファイルの検索パスを通す
+# ヘッダー検索パス
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# ★修正：ファイル検索の起点を絶対パス（${CMAKE_CURRENT_SOURCE_DIR}/src）で明確に指定する
+# ★修正：.c だけでなく .cpp もすべて再帰的に集める
 file(GLOB_RECURSE ALL_SRC_FILES 
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
-# Androidビルドで競合・エラーの原因になる他OS用の描画ファイルを除外
-list(REMOVE_ITEM ALL_SRC_FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-mac.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-x11.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-sdl.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-gcu.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-cap.c"
-)
+# ユニットテスト用のコード（src/test/配下）はビルド対象から除外
+file(GLOB_RECURSE TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/test/*")
+if(TEST_FILES)
+    list(REMOVE_ITEM ALL_SRC_FILES ${TEST_FILES})
+endif()
 
-# Androidアプリは共有ライブラリ(libhengband.so)としてビルドする
+# Androidアプリ用の共有ライブラリ(libhengband.so)として設定
 add_library(hengband SHARED ${ALL_SRC_FILES})
 
 # Android OSの基本機能とSDL2ライブラリを紐付ける
