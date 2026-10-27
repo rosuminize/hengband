@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 
+      スマホのファイルアクセス権限などの設定が将来必要になったらここに書きますが、
+      今はローカルで動かすだけなので最小限にします。
+    -->
+
+    <application
+        android:allowBackup="true"
+        android:label="変愚蛮怒"
+        android:theme="@style/Theme.AppCompat.NoActionBar"> <!-- 邪魔なタイトルバーを消す -->
+
+        <!-- アプリのメイン画面（SDL2の中継役であるMainActivity） -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="portrait"> <!-- ★ここで「縦画面」に強制固定！★ -->
+            
+            <!-- アプリアイコンをタップした時にここから起動するという宣言 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
