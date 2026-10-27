@@ -4,6 +4,9 @@ project(HengbandMobile C)
 # Android用のマクロ定義
 add_definitions(-DUSE_ANDROID)
 
+# ★重要：変愚蛮怒のヘッダーファイル（z-term.h等）があるフォルダの場所をコンパイラに教える
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # srcフォルダ内のすべてのC言語ファイルを取得
 file(GLOB ALL_SRC_FILES "src/*.c")
 
