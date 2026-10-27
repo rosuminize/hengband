@@ -20,15 +20,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
-      # 変更点：「yes |」を追加してライセンス同意を全自動で突破します
-      - name: Install NDK and CMake
-        run: |
-          yes | sdkmanager --licenses
-          yes | sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
-
       - name: Install SDL2 Dependencies
         run: |
           sudo apt-get update
