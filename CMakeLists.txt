@@ -4,13 +4,13 @@ project(HengbandMobile C)
 # Android用のマクロ定義
 add_definitions(-DUSE_ANDROID)
 
-# 変愚蛮怒のヘッダーファイルの検索パスを通す
+# 変愚蛮怒の全ヘッダーファイルの検索パスを通す
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# ★修正：srcフォルダの中にあるすべてのC言語ファイルを正しく取得する
-file(GLOB ALL_SRC_FILES "src/*.c")
+# ★修正：srcフォルダの中およびその下層にあるすべてのサブディレクトリからC言語ファイルを残らず集める
+file(GLOB_RECURSE ALL_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
 
-# Androidビルドでエラーの原因になる、他OS用の描画ファイルをリストから除外
+# Androidビルドで競合・エラーの原因になる、他OS用の描画ファイルを除外
 list(REMOVE_ITEM ALL_SRC_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-mac.c"
