@@ -25,10 +25,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev
 
+      - name: Fetch SDL2 Android Java Bindings
+        run: |
+          git clone --depth 1 -b SDL2 https://github.com/libsdl-org/SDL.git
+          mkdir -p android/app/src/main/java/org/libsdl/app
+          cp -r SDL/android-project/app/src/main/java/org/libsdl/app/* android/app/src/main/java/org/libsdl/app/
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.7' # 新しすぎるバージョンを避けて安定版を指定
+          gradle-version: '8.7'
 
       - name: Build Android APK
         working-directory: ./android
