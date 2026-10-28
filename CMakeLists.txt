@@ -6,9 +6,12 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ★重要：種族名「ANDROID」とNDKマクロの衝突を回避するため、ANDROIDマクロを未定義化
+add_compile_options(-UANDROID)
+
 add_definitions(-DUSE_ANDROID)
 
-# xoshiro-cpp の取得（ブランチ名を master に指定）
+# xoshiro-cpp の取得
 FetchContent_Declare(
     xoshiro_repo
     GIT_REPOSITORY https://github.com/Reputeless/Xoshiro-cpp.git
