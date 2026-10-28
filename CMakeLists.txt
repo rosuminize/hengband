@@ -25,6 +25,8 @@ add_subdirectory(external/SDL2_image external/SDL2_image_build EXCLUDE_FROM_ALL)
 # --- SDL2_ttf のビルド組み込み ---
 set(SDL2TTF_SAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL2TTF_VENDORED ON CACHE BOOL "" FORCE)
+# ★追加: コンパイル高速化と不要な依存関係を省くためHarfBuzzをオフ
+set(SDL2TTF_HARFBUZZ OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/SDL2_ttf external/SDL2_ttf_build EXCLUDE_FROM_ALL)
 
 # xoshiro-cpp の取得
@@ -81,7 +83,7 @@ list(REMOVE_ITEM ALL_SRC_FILES
 # 共有ライブラリのビルド
 add_library(hengband SHARED ${ALL_SRC_FILES})
 
-# 依存ライブラリのリンク（ビルドされたSDL2ターゲットと直接リンク）
+# 依存ライブラリのリンク
 target_link_libraries(hengband
     android
     log
