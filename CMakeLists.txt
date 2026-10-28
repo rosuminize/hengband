@@ -8,14 +8,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_definitions(-DUSE_ANDROID)
 
-# 不足している xoshiro-cpp を取得
+# xoshiro-cpp の取得（ブランチ名を master に指定）
 FetchContent_Declare(
     xoshiro_repo
     GIT_REPOSITORY https://github.com/Reputeless/Xoshiro-cpp.git
-    GIT_TAG        main
+    GIT_TAG        master
 )
 FetchContent_MakeAvailable(xoshiro_repo)
 include_directories(${xoshiro_repo_SOURCE_DIR})
+include_directories(${xoshiro_repo_SOURCE_DIR}/include)
 
 # 変愚蛮怒のヘッダーパス
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
