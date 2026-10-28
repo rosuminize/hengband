@@ -6,7 +6,7 @@ include(FetchContent)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ★重要：種族名「ANDROID」とNDKマクロの衝突を回避するため、ANDROIDマクロを未定義化
+# 種族名「ANDROID」とNDKマクロの衝突を回避
 add_compile_options(-UANDROID)
 
 add_definitions(-DUSE_ANDROID)
@@ -38,11 +38,24 @@ file(GLOB_RECURSE ALL_SRC_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
-# テストコードの除外
+# ユニットテストコードの除外
 file(GLOB_RECURSE TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/test/*")
 if(TEST_FILES)
     list(REMOVE_ITEM ALL_SRC_FILES ${TEST_FILES})
 endif()
+
+# ★重要：他プラットフォーム（Windows, macOS, Unixデスクトップ, GCU, X11等）専用コードの除外
+file(GLOB_RECURSE WIN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win/*" "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.cpp")
+file(GLOB_RECURSE UNIX_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-unix/*")
+list(REMOVE_ITEM ALL_SRC_FILES
+    ${WIN_FILES}
+    ${UNIX_FILES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-cap.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-gcu.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-x11.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-mac.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main-sdl.cpp"
+)
 
 # 共有ライブラリのビルド
 add_library(hengband SHARED ${ALL_SRC_FILES})
