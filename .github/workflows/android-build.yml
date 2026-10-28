@@ -26,6 +26,8 @@ jobs:
           git clone --depth 1 --branch release-2.30.x https://github.com/libsdl-org/SDL.git external/SDL2
           git clone --depth 1 --branch release-2.8.x https://github.com/libsdl-org/SDL_image.git external/SDL2_image
           git clone --depth 1 --branch release-2.22.x https://github.com/libsdl-org/SDL_ttf.git external/SDL2_ttf
+          # ★追加: SDL2_ttfが必要とする FreeType ソースコードを取得
+          (cd external/SDL2_ttf/external && bash download.sh)
 
       - name: Fetch SDL2 Android Java Bindings
         run: |
