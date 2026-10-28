@@ -44,12 +44,18 @@ if(TEST_FILES)
     list(REMOVE_ITEM ALL_SRC_FILES ${TEST_FILES})
 endif()
 
-# ★重要：他プラットフォーム（Windows, macOS, Unixデスクトップ, GCU, X11等）専用コードの除外
+# 他プラットフォーム専用コードの除外
 file(GLOB_RECURSE WIN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win/*" "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.cpp")
 file(GLOB_RECURSE UNIX_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-unix/*")
+# ★追加：Android環境に存在しない外部ライブラリ（curl）依存の通信機能とbot機能を除外
+file(GLOB_RECURSE NET_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/net/*")
+file(GLOB_RECURSE BOT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/bot/*")
+
 list(REMOVE_ITEM ALL_SRC_FILES
     ${WIN_FILES}
     ${UNIX_FILES}
+    ${NET_FILES}
+    ${BOT_FILES}
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-cap.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-gcu.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-x11.cpp"
