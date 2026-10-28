@@ -8,8 +8,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 種族名「ANDROID」とNDKマクロの衝突を回避
 add_compile_options(-UANDROID)
-
 add_definitions(-DUSE_ANDROID)
+
+# --- SDL2 本体のビルド組み込み ---
+set(SDL_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_TEST OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/SDL2 external/SDL2_build EXCLUDE_FROM_ALL)
+
+# --- SDL2_image のビルド組み込み ---
+set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(SDL2IMAGE_SAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL2IMAGE_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/SDL2_image external/SDL2_image_build EXCLUDE_FROM_ALL)
+
+# --- SDL2_ttf のビルド組み込み ---
+set(SDL2TTF_SAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL2TTF_VENDORED ON CACHE BOOL "" FORCE)
+add_subdirectory(external/SDL2_ttf external/SDL2_ttf_build EXCLUDE_FROM_ALL)
 
 # xoshiro-cpp の取得
 FetchContent_Declare(
@@ -44,10 +60,9 @@ if(TEST_FILES)
     list(REMOVE_ITEM ALL_SRC_FILES ${TEST_FILES})
 endif()
 
-# 他プラットフォーム専用コードの除外
+# 他プラットフォーム専用コード・不要モジュールの除外
 file(GLOB_RECURSE WIN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win/*" "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.cpp")
 file(GLOB_RECURSE UNIX_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-unix/*")
-# ★追加：Android環境に存在しない外部ライブラリ（curl）依存の通信機能とbot機能を除外
 file(GLOB_RECURSE NET_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/net/*")
 file(GLOB_RECURSE BOT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/bot/*")
 
@@ -66,5 +81,11 @@ list(REMOVE_ITEM ALL_SRC_FILES
 # 共有ライブラリのビルド
 add_library(hengband SHARED ${ALL_SRC_FILES})
 
-# 依存ライブラリのリンク
-target_link_libraries(hengband android log SDL2 SDL2_image SDL2_ttf)
+# 依存ライブラリのリンク（ビルドされたSDL2ターゲットと直接リンク）
+target_link_libraries(hengband
+    android
+    log
+    SDL2::SDL2
+    SDL2_image::SDL2_image
+    SDL2_ttf::SDL2_ttf
+)
