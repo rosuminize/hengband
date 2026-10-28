@@ -20,16 +20,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install SDL2 Dependencies
+      - name: Checkout SDL2 and Extension Libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev
+          mkdir -p external
+          git clone --depth 1 --branch release-2.30.x https://github.com/libsdl-org/SDL.git external/SDL2
+          git clone --depth 1 --branch release-2.8.x https://github.com/libsdl-org/SDL_image.git external/SDL2_image
+          git clone --depth 1 --branch release-2.22.x https://github.com/libsdl-org/SDL_ttf.git external/SDL2_ttf
 
       - name: Fetch SDL2 Android Java Bindings
         run: |
-          git clone --depth 1 -b SDL2 https://github.com/libsdl-org/SDL.git
           mkdir -p android/app/src/main/java/org/libsdl/app
-          cp -r SDL/android-project/app/src/main/java/org/libsdl/app/* android/app/src/main/java/org/libsdl/app/
+          cp -r external/SDL2/android-project/app/src/main/java/org/libsdl/app/* android/app/src/main/java/org/libsdl/app/
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
