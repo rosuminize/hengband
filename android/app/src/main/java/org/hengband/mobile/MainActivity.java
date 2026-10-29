@@ -1,10 +1,13 @@
 package org.hengband.mobile;
 
 import android.os.Bundle;
-import android.system.Os;
 import android.util.Log;
 import org.libsdl.app.SDLActivity;
-import java.io.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends SDLActivity {
 
@@ -21,15 +24,8 @@ public class MainActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // assets からアプリ内部ストレージへのゲームデータ展開
         extractAssetsIfNeeded();
-        try {
-            // 変愚蛮怒の作業ディレクトリとパスを内部ストレージに設定
-            String filesPath = getFilesDir().getAbsolutePath();
-            Os.chdir(filesPath);
-            Os.setenv("ANGBAND_PATH", filesPath + "/lib/", true);
-        } catch (Exception e) {
-            Log.e("Hengband", "Failed to set environment", e);
-        }
         super.onCreate(savedInstanceState);
     }
 
