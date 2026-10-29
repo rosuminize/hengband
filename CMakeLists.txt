@@ -9,8 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 種族名「ANDROID」とNDKマクロの衝突を回避
 add_compile_options(-UANDROID)
 
-# Android用マクロ & SDL2描画有効化 & fmtヘッダーオンリー
-add_definitions(-DUSE_ANDROID -DUSE_SDL2 -DFMT_HEADER_ONLY)
+# Android用マクロ & SDL描画マクロ（SDLとSDL2の両方を定義） & fmtヘッダーオンリー
+add_definitions(-DUSE_ANDROID -DUSE_SDL -DUSE_SDL2 -DFMT_HEADER_ONLY)
 
 # --- SDL2 本体のビルド組み込み ---
 set(SDL_SHARED ON CACHE BOOL "" FORCE)
@@ -72,7 +72,6 @@ if(TEST_FILES)
 endif()
 
 # 他プラットフォーム専用コード・外部依存（curl）の除外
-# ★ main-sdl.cpp は除外せずビルド対象に残します
 file(GLOB_RECURSE WIN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win/*" "${CMAKE_CURRENT_SOURCE_DIR}/src/main-win.cpp")
 file(GLOB_RECURSE NET_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/net/*")
 
@@ -85,12 +84,6 @@ list(REMOVE_ITEM ALL_SRC_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-mac.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-unix/unix-music.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main-unix/unix-sound.cpp"
-)
-
-# ★重要：main.cppのmain関数をAndroidが呼び出せるSDL_mainとして自動エクスポート
-set_source_files_properties(
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
-    PROPERTIES COMPILE_OPTIONS "-include;SDL.h"
 )
 
 # 共有ライブラリのビルド
