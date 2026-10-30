@@ -1,6 +1,7 @@
 package org.hengband.mobile;
 
 import android.os.Bundle;
+import android.system.Os;
 import android.util.Log;
 import org.libsdl.app.SDLActivity;
 import java.io.File;
@@ -24,8 +25,14 @@ public class MainActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // assets からアプリ内部ストレージへのゲームデータ展開
         extractAssetsIfNeeded();
+        try {
+            // C++ 側の chdir 用にパスを環境変数に設定
+            Os.setenv("FILES_DIR", getFilesDir().getAbsolutePath(), true);
+            Os.setenv("ANGBAND_PATH", getFilesDir().getAbsolutePath() + "/lib/", true);
+        } catch (Exception e) {
+            Log.e("Hengband", "Failed to set env", e);
+        }
         super.onCreate(savedInstanceState);
     }
 
