@@ -6,7 +6,6 @@ android {
     namespace 'org.hengband.mobile'
     compileSdk 34
 
-    // ★重要：C++20の最新機能を完全サポートするNDK 26を指定
     ndkVersion "26.3.11579264"
 
     defaultConfig {
@@ -39,6 +38,11 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+
+    // ★追加: テキストデータや定義ファイルをAPK内で無圧縮のまま保持する
+    aaptOptions {
+        noCompress 'txt', 'raw', 'prf'
     }
 }
 
