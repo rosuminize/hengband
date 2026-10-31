@@ -4,11 +4,7 @@ import android.os.Bundle;
 import android.system.Os;
 import android.util.Log;
 import org.libsdl.app.SDLActivity;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 
 public class MainActivity extends SDLActivity {
 
@@ -27,38 +23,36 @@ public class MainActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         extractAssetsRecursive("lib", new File(getFilesDir(), "lib"));
 
-        // ユーザーディレクトリ用フォルダ（セーブデータ・設定等）を事前に作成
         File userDir = new File(getFilesDir(), "user");
         if (!userDir.exists()) {
             userDir.mkdirs();
         }
 
         try {
-            Os.setenv("FILES_DIR", getFilesDir().getAbsolutePath(), true);
-            Os.setenv("ANGBAND_PATH", getFilesDir().getAbsolutePath() + "/lib/", true);
+            String filesPath = getFilesDir().getAbsolutePath();
+            Os.setenv("FILES_DIR", filesPath, true);
+            Os.setenv("ANGBAND_PATH", filesPath + "/lib/", true);
         } catch (Exception e) {
             Log.e("Hengband", "Failed to set env", e);
         }
         super.onCreate(savedInstanceState);
     }
 
-    private void extractAssetsRecursive(String assetPath, File targetDir) {
+    private void extractAssetsRecursive(String path, File target) {
         try {
-            String[] list = getAssets().list(assetPath);
+            String[] list = getAssets().list(path);
             if (list == null || list.length == 0) {
-                // ファイルの場合はコピー
-                copyAssetFile(assetPath, targetDir);
+                copyAssetFile(path, target);
             } else {
-                // ディレクトリの場合は作成して再帰
-                if (!targetDir.exists()) {
-                    targetDir.mkdirs();
+                if (!target.exists()) {
+                    target.mkdirs();
                 }
-                for (String file : list) {
-                    extractAssetsRecursive(assetPath + "/" + file, new File(targetDir, file));
+                for (String child : list) {
+                    extractAssetsRecursive(path + "/" + child, new File(target, child));
                 }
             }
         } catch (IOException e) {
-            Log.e("Hengband", "Asset extraction error at: " + assetPath, e);
+            Log.e("Hengband", "Extraction failed for: " + path, e);
         }
     }
 
@@ -78,7 +72,7 @@ public class MainActivity extends SDLActivity {
                 out.write(buf, 0, len);
             }
         } catch (IOException e) {
-            Log.e("Hengband", "Failed copying file: " + srcPath, e);
+            Log.e("Hengband", "Failed copy: " + srcPath, e);
         }
     }
 }
