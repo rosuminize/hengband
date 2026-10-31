@@ -25,9 +25,15 @@ public class MainActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        extractAssetsIfNeeded();
+        extractAssetsRecursive("lib", new File(getFilesDir(), "lib"));
+
+        // ユーザーディレクトリ用フォルダ（セーブデータ・設定等）を事前に作成
+        File userDir = new File(getFilesDir(), "user");
+        if (!userDir.exists()) {
+            userDir.mkdirs();
+        }
+
         try {
-            // C++ 側の chdir 用にパスを環境変数に設定
             Os.setenv("FILES_DIR", getFilesDir().getAbsolutePath(), true);
             Os.setenv("ANGBAND_PATH", getFilesDir().getAbsolutePath() + "/lib/", true);
         } catch (Exception e) {
@@ -36,39 +42,43 @@ public class MainActivity extends SDLActivity {
         super.onCreate(savedInstanceState);
     }
 
-    private void extractAssetsIfNeeded() {
-        File libDir = new File(getFilesDir(), "lib");
-        if (!libDir.exists()) {
-            copyAssetFolder("lib", libDir);
-        }
-    }
-
-    private void copyAssetFolder(String srcName, File dstDir) {
+    private void extractAssetsRecursive(String assetPath, File targetDir) {
         try {
-            String[] fileList = getAssets().list(srcName);
-            if (fileList == null || fileList.length == 0) {
-                copyAssetFile(srcName, dstDir);
+            String[] list = getAssets().list(assetPath);
+            if (list == null || list.length == 0) {
+                // ファイルの場合はコピー
+                copyAssetFile(assetPath, targetDir);
             } else {
-                dstDir.mkdirs();
-                for (String filename : fileList) {
-                    copyAssetFolder(srcName + "/" + filename, new File(dstDir, filename));
+                // ディレクトリの場合は作成して再帰
+                if (!targetDir.exists()) {
+                    targetDir.mkdirs();
+                }
+                for (String file : list) {
+                    extractAssetsRecursive(assetPath + "/" + file, new File(targetDir, file));
                 }
             }
         } catch (IOException e) {
-            Log.e("Hengband", "Asset copy error", e);
+            Log.e("Hengband", "Asset extraction error at: " + assetPath, e);
         }
     }
 
     private void copyAssetFile(String srcPath, File dstFile) {
+        if (dstFile.exists() && dstFile.length() > 0) {
+            return;
+        }
+        File parent = dstFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
         try (InputStream in = getAssets().open(srcPath);
              OutputStream out = new FileOutputStream(dstFile)) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) != -1) {
+                out.write(buf, 0, len);
             }
         } catch (IOException e) {
-            Log.e("Hengband", "File copy error: " + srcPath, e);
+            Log.e("Hengband", "Failed copying file: " + srcPath, e);
         }
     }
 }
