@@ -53,22 +53,19 @@ extern "C" int SDL_main(int argc, char *argv[]) {
         __android_log_print(ANDROID_LOG_ERROR, "Hengband", "Data check FAIL: Monster.txt still not found!");
     }
 
-    // 内部ストレージのパスを元にオプション引数を生成
+    // -u オプションでユーザーセーブフォルダのみを安全に指定
     std::string base_path = files_dir ? files_dir : ".";
-    std::string lib_arg = "-d" + base_path + "/lib/";
-    std::string user_arg = "-du" + base_path + "/user/";
+    std::string user_arg = "-u" + base_path + "/user";
 
     char arg0[] = "hengband";
     char *custom_argv[] = {
         arg0,
-        const_cast<char *>(lib_arg.c_str()),
         const_cast<char *>(user_arg.c_str()),
         nullptr
     };
-    int custom_argc = 3;
+    int custom_argc = 2;
 
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Args: %s %s", lib_arg.c_str(), user_arg.c_str());
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling Hengband main()...");
+    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling Hengband main with arg: %s", user_arg.c_str());
 
     int result = main(custom_argc, custom_argv);
     __android_log_print(ANDROID_LOG_INFO, "Hengband", "Hengband main() returned with code: %d", result);
