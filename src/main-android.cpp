@@ -5,12 +5,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <string>
 
 #undef main
 
 extern int main(int argc, char *argv[]);
 
-// stdout と stderr を Android の logcat にリアルタイム転送するスレッド
 static int pfd[2];
 static pthread_t logging_thread;
 
@@ -40,27 +40,36 @@ extern "C" int SDL_main(int argc, char *argv[]) {
 
     __android_log_print(ANDROID_LOG_INFO, "Hengband", "=== Hengband Mobile Starting ===");
 
-    // アプリ内部ストレージへの移動
     const char *files_dir = getenv("FILES_DIR");
     if (files_dir) {
         chdir(files_dir);
-        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Current directory changed to: %s", files_dir);
+        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Working directory: %s", files_dir);
     }
 
-    // データファイルの存在確認テスト
     struct stat st;
     if (stat("lib/edit/Monster.txt", &st) == 0) {
-        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Data check PASS: Monster.txt exists (%lld bytes)", (long long)st.st_size);
+        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Data check PASS: Monster.txt found (%lld bytes)", (long long)st.st_size);
     } else {
-        __android_log_print(ANDROID_LOG_ERROR, "Hengband", "Data check FAIL: Cannot find lib/edit/Monster.txt!");
+        __android_log_print(ANDROID_LOG_ERROR, "Hengband", "Data check FAIL: Monster.txt still not found!");
     }
 
-    // 不正な引数で落ちないよう、引数なし（デフォルト起動）で main を呼ぶ
-    char arg0[] = "hengband";
-    char *custom_argv[] = { arg0, nullptr };
-    int custom_argc = 1;
+    // 内部ストレージのパスを元にオプション引数を生成
+    std::string base_path = files_dir ? files_dir : ".";
+    std::string lib_arg = "-d" + base_path + "/lib/";
+    std::string user_arg = "-du" + base_path + "/user/";
 
+    char arg0[] = "hengband";
+    char *custom_argv[] = {
+        arg0,
+        const_cast<char *>(lib_arg.c_str()),
+        const_cast<char *>(user_arg.c_str()),
+        nullptr
+    };
+    int custom_argc = 3;
+
+    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Args: %s %s", lib_arg.c_str(), user_arg.c_str());
     __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling Hengband main()...");
+
     int result = main(custom_argc, custom_argv);
     __android_log_print(ANDROID_LOG_INFO, "Hengband", "Hengband main() returned with code: %d", result);
 
