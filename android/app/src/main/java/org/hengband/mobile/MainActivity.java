@@ -21,20 +21,26 @@ public class MainActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        String filesPath = getFilesDir().getAbsolutePath();
+
+        // 1. assets/lib を内部ストレージ files/lib へ展開
         extractAssetsRecursive("lib", new File(getFilesDir(), "lib"));
 
-        File userDir = new File(getFilesDir(), "user");
-        if (!userDir.exists()) {
-            userDir.mkdirs();
+        // 2. 変愚蛮怒が探索する ~/.angband/Hengband フォルダを事前作成
+        File angbandDir = new File(getFilesDir(), ".angband/Hengband");
+        if (!angbandDir.exists()) {
+            angbandDir.mkdirs();
         }
 
+        // 3. 環境変数の設定 (HOME を内部ストレージにして ~ 解決を可能にする)
         try {
-            String filesPath = getFilesDir().getAbsolutePath();
+            Os.setenv("HOME", filesPath, true);
             Os.setenv("FILES_DIR", filesPath, true);
             Os.setenv("ANGBAND_PATH", filesPath + "/lib/", true);
         } catch (Exception e) {
             Log.e("Hengband", "Failed to set env", e);
         }
+
         super.onCreate(savedInstanceState);
     }
 
@@ -52,7 +58,7 @@ public class MainActivity extends SDLActivity {
                 }
             }
         } catch (IOException e) {
-            Log.e("Hengband", "Extraction failed for: " + path, e);
+            Log.e("Hengband", "Extraction error at: " + path, e);
         }
     }
 
@@ -71,6 +77,7 @@ public class MainActivity extends SDLActivity {
             while ((len = in.read(buf)) != -1) {
                 out.write(buf, 0, len);
             }
+        } catch (FileNotFoundException ignored) {
         } catch (IOException e) {
             Log.e("Hengband", "Failed copy: " + srcPath, e);
         }
