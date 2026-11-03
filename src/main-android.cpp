@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <string>
 
 #undef main
 
@@ -43,7 +42,8 @@ extern "C" int SDL_main(int argc, char *argv[]) {
     const char *files_dir = getenv("FILES_DIR");
     if (files_dir) {
         chdir(files_dir);
-        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Working directory: %s", files_dir);
+        setenv("HOME", files_dir, 1);
+        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Working directory & HOME set to: %s", files_dir);
     }
 
     struct stat st;
@@ -53,19 +53,12 @@ extern "C" int SDL_main(int argc, char *argv[]) {
         __android_log_print(ANDROID_LOG_ERROR, "Hengband", "Data check FAIL: Monster.txt still not found!");
     }
 
-    // -u オプションでユーザーセーブフォルダのみを安全に指定
-    std::string base_path = files_dir ? files_dir : ".";
-    std::string user_arg = "-u" + base_path + "/user";
-
+    // HOMEとANGBAND_PATHが設定されているため、余計な引数は渡さず標準起動
     char arg0[] = "hengband";
-    char *custom_argv[] = {
-        arg0,
-        const_cast<char *>(user_arg.c_str()),
-        nullptr
-    };
-    int custom_argc = 2;
+    char *custom_argv[] = { arg0, nullptr };
+    int custom_argc = 1;
 
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling Hengband main with arg: %s", user_arg.c_str());
+    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling Hengband main()...");
 
     int result = main(custom_argc, custom_argv);
     __android_log_print(ANDROID_LOG_INFO, "Hengband", "Hengband main() returned with code: %d", result);
