@@ -40,12 +40,21 @@ android {
         }
     }
 
-    // ★追加: テキストデータや定義ファイルをAPK内で無圧縮のまま保持する
     aaptOptions {
         noCompress 'txt', 'raw', 'prf'
     }
 }
 
+// ビルド前にリポジトリ直下の lib/ を assets/lib/ へコピー
+tasks.register('copyGameAssets', Copy) {
+    from file('../../lib')
+    into file('src/main/assets/lib')
+}
+preBuild.dependsOn copyGameAssets
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
 }
