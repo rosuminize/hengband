@@ -23,16 +23,43 @@ public class MainActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         String filesPath = getFilesDir().getAbsolutePath();
 
-        // 1. assets/lib を内部ストレージ files/lib へ展開
-        extractAssetsRecursive("lib", new File(getFilesDir(), "lib"));
-
-        // 2. 変愚蛮怒が探索する ~/.angband/Hengband フォルダを事前作成
-        File angbandDir = new File(getFilesDir(), ".angband/Hengband");
-        if (!angbandDir.exists()) {
-            angbandDir.mkdirs();
+        File libTargetDir = new File(getFilesDir(), "lib");
+        if (!libTargetDir.exists()) {
+            libTargetDir.mkdirs();
         }
 
-        // 3. 環境変数の設定 (HOME を内部ストレージにして ~ 解決を可能にする)
+        // assets/lib がある場合はそれを、なければ直下の edit 等を files/lib に展開
+        try {
+            String[] rootAssets = getAssets().list("");
+            boolean hasLibFolder = false;
+            if (rootAssets != null) {
+                for (String name : rootAssets) {
+                    if ("lib".equals(name)) {
+                        hasLibFolder = true;
+                        break;
+                    }
+                }
+            }
+
+            if (hasLibFolder) {
+                extractAssetsRecursive("lib", libTargetDir);
+            } else {
+                // assets直下に展開されている場合のフォールバック
+                String[] angbandDirs = {"apex", "bone", "data", "edit", "file", "fonts", "help", "info", "pref", "script", "user", "xtra"};
+                for (String dir : angbandDirs) {
+                    extractAssetsRecursive(dir, new File(libTargetDir, dir));
+                }
+            }
+        } catch (IOException e) {
+            Log.e("Hengband", "Asset check failed", e);
+        }
+
+        // ユーザーディレクトリの事前作成
+        File userDir = new File(getFilesDir(), "user");
+        if (!userDir.exists()) {
+            userDir.mkdirs();
+        }
+
         try {
             Os.setenv("HOME", filesPath, true);
             Os.setenv("FILES_DIR", filesPath, true);
