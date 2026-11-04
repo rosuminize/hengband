@@ -26,15 +26,6 @@ android {
         }
     }
 
-    // リポジトリ直下の lib フォルダを直接 assets/lib として認識させる
-    sourceSets {
-        main {
-            assets {
-                srcDirs = ['src/main/assets', '../../lib']
-            }
-        }
-    }
-
     externalNativeBuild {
         cmake {
             path file('../../CMakeLists.txt')
