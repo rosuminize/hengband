@@ -26,6 +26,15 @@ android {
         }
     }
 
+    // リポジトリ直下の lib フォルダを直接 assets/lib として認識させる
+    sourceSets {
+        main {
+            assets {
+                srcDirs = ['src/main/assets', '../../lib']
+            }
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path file('../../CMakeLists.txt')
@@ -45,16 +54,6 @@ android {
     }
 }
 
-// ビルド前にリポジトリ直下の lib/ を assets/lib/ へコピー
-tasks.register('copyGameAssets', Copy) {
-    from file('../../lib')
-    into file('src/main/assets/lib')
-}
-preBuild.dependsOn copyGameAssets
-
-dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-}
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
 }
