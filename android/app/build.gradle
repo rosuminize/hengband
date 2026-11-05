@@ -26,18 +26,6 @@ android {
         }
     }
 
-    // ★追加: SDL2 の Java ソースコード（SDLActivity 等）をコンパイル対象に登録
-    sourceSets {
-        main {
-            java {
-                srcDirs = [
-                    'src/main/java',
-                    '../../external/SDL2/android-project/app/src/main/java'
-                ]
-            }
-        }
-    }
-
     externalNativeBuild {
         cmake {
             path file('../../CMakeLists.txt')
