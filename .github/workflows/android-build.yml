@@ -18,14 +18,14 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # SSH形式のサブモジュールURLをHTTPSに自動変換して確実に展開
-      - name: Update submodules
+      # サブモジュールの取得と、SDL_ttf/SDL_imageに必要なFreeType等の自動ダウンロード
+      - name: Update submodules and external dependencies
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule sync --recursive
           git submodule update --init --recursive
 
-          # 万が一サブモジュールが空だった場合の自動クローン保護
+          # サブモジュールが空の場合のフォールバック
           if [ ! -f "external/SDL2/CMakeLists.txt" ]; then
             echo "Submodules missing, cloning SDL2 repositories directly..."
             mkdir -p external
@@ -33,6 +33,16 @@ jobs:
             git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL.git external/SDL2
             git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL_image.git external/SDL2_image
             git clone --depth 1 --branch SDL2 https://github.com/libsdl-org/SDL_ttf.git external/SDL2_ttf
+          fi
+
+          # SDL2_ttf用のFreeTypeおよびHarfBuzzソースを取得
+          if [ -f "external/SDL2_ttf/external/download.sh" ]; then
+            cd external/SDL2_ttf/external && bash download.sh && cd ../../..
+          fi
+
+          # SDL2_image用の各種画像フォーマットデコーダソースを取得
+          if [ -f "external/SDL2_image/external/download.sh" ]; then
+            cd external/SDL2_image/external && bash download.sh && cd ../../..
           fi
 
       - name: Set up JDK 17
