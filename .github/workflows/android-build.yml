@@ -43,11 +43,15 @@ jobs:
           mkdir -p android/app/src/main/assets/lib
           cp -r lib/* android/app/src/main/assets/lib/
 
-      # パスを固定せず、リポジトリ全体から SDLActivity.java などのSDL関連Javaファイルを自動探索して配置
+      # SDL2のJavaソース（SDLActivity等）を確実にコピーし、結果をログに一覧表示
       - name: Copy SDL2 java sources
         run: |
           mkdir -p android/app/src/main/java/org/libsdl/app
-          find . -type f -name "SDLActivity.java" -exec dirname {} \; | head -n 1 | xargs -I {} cp -r {}/*.java android/app/src/main/java/org/libsdl/app/
+          for dir in $(find . -type f -name "SDLActivity.java" -exec dirname {} +); do
+            cp -v "$dir"/*.java android/app/src/main/java/org/libsdl/app/
+          done
+          echo "=== Copied SDL Java files ==="
+          ls -la android/app/src/main/java/org/libsdl/app/
 
       - name: Build with Gradle
         run: |
