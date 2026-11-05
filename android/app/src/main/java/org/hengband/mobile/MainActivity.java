@@ -1,5 +1,6 @@
 package org.hengband.mobile;
 
+import android.content.Context;
 import android.os.Bundle;
 import android.system.Os;
 import android.util.Log;
@@ -44,7 +45,6 @@ public class MainActivity extends SDLActivity {
             if (hasLibFolder) {
                 extractAssetsRecursive("lib", libTargetDir);
             } else {
-                // assets直下に展開されている場合のフォールバック
                 String[] angbandDirs = {"apex", "bone", "data", "edit", "file", "fonts", "help", "info", "pref", "script", "user", "xtra"};
                 for (String dir : angbandDirs) {
                     extractAssetsRecursive(dir, new File(libTargetDir, dir));
