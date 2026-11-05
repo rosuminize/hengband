@@ -18,7 +18,6 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # サブモジュールの初期化と取得
       - name: Update submodules
         run: |
           git submodule update --init --recursive
@@ -39,25 +38,22 @@ jobs:
         with:
           ndk-version: r26d
 
-      # ゲームデータ（lib/）を assets/lib/ へ配置
       - name: Copy game assets to android assets folder
         run: |
           mkdir -p android/app/src/main/assets/lib
           cp -r lib/* android/app/src/main/assets/lib/
 
-      # SDL2のJavaソース（SDLActivity等）を検索してJavaディレクトリへ直接配置
+      # パスを固定せず、リポジトリ全体から SDLActivity.java などのSDL関連Javaファイルを自動探索して配置
       - name: Copy SDL2 java sources
         run: |
           mkdir -p android/app/src/main/java/org/libsdl/app
-          find external/SDL2 -path "*/org/libsdl/app/*.java" -exec cp {} android/app/src/main/java/org/libsdl/app/ \;
+          find . -type f -name "SDLActivity.java" -exec dirname {} \; | head -n 1 | xargs -I {} cp -r {}/*.java android/app/src/main/java/org/libsdl/app/
 
-      # ビルド実行
       - name: Build with Gradle
         run: |
           cd android
           gradle assembleDebug
 
-      # 成果物APKの保存
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
