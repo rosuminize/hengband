@@ -29,36 +29,13 @@ public class MainActivity extends SDLActivity {
             libTargetDir.mkdirs();
         }
 
-        // assets/lib がある場合はそれを、なければ直下の edit 等を files/lib に展開
-        try {
-            String[] rootAssets = getAssets().list("");
-            boolean hasLibFolder = false;
-            if (rootAssets != null) {
-                for (String name : rootAssets) {
-                    if ("lib".equals(name)) {
-                        hasLibFolder = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasLibFolder) {
-                extractAssetsRecursive("lib", libTargetDir);
-            } else {
-                String[] angbandDirs = {"apex", "bone", "data", "edit", "file", "fonts", "help", "info", "pref", "script", "user", "xtra"};
-                for (String dir : angbandDirs) {
-                    extractAssetsRecursive(dir, new File(libTargetDir, dir));
-                }
-            }
-        } catch (IOException e) {
-            Log.e("Hengband", "Asset check failed", e);
-        }
-
-        // ユーザーディレクトリの事前作成
         File userDir = new File(getFilesDir(), "user");
         if (!userDir.exists()) {
             userDir.mkdirs();
         }
+
+        // assets/lib を files/lib に展開
+        extractGameAssets(libTargetDir);
 
         try {
             Os.setenv("HOME", filesPath, true);
@@ -69,6 +46,26 @@ public class MainActivity extends SDLActivity {
         }
 
         super.onCreate(savedInstanceState);
+    }
+
+    private void extractGameAssets(File libTargetDir) {
+        try {
+            // list("") を介さず、直に "lib" 内を走査
+            String[] libFiles = getAssets().list("lib");
+            if (libFiles != null && libFiles.length > 0) {
+                Log.i("Hengband", "Found assets/lib (" + libFiles.length + " entries). Extracting...");
+                extractAssetsRecursive("lib", libTargetDir);
+            } else {
+                Log.i("Hengband", "assets/lib empty or flat. Checking standard subdirectories...");
+                String[] angbandDirs = {"apex", "bone", "data", "edit", "file", "fonts", "help", "info", "pref", "script", "user", "xtra"};
+                for (String dir : angbandDirs) {
+                    extractAssetsRecursive(dir, new File(libTargetDir, dir));
+                }
+            }
+            Log.i("Hengband", "Asset extraction finished.");
+        } catch (IOException e) {
+            Log.e("Hengband", "Asset extraction failed", e);
+        }
     }
 
     private void extractAssetsRecursive(String path, File target) {
