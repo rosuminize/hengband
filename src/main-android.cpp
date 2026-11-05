@@ -1,77 +1,65 @@
 #include <SDL.h>
+#include <SDL_main.h>
 #include <android/log.h>
-#include <pthread.h>
 #include <unistd.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <sys/stat.h>
+#include <cstdlib>
+#include <iostream>
+#include <fstream>
+#include <vector>
 #include <string>
 
-#undef main
+#define LOG_TAG "Hengband"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// 変愚蛮怒本体のエントリポイント
 extern int main(int argc, char *argv[]);
 
-static int pfd[2];
-static pthread_t logging_thread;
-
-static void *logger_thread_func(void *) {
-    ssize_t rdsz;
-    char buf[2048];
-    while ((rdsz = read(pfd[0], buf, sizeof(buf) - 1)) > 0) {
-        if (buf[rdsz - 1] == '\n') rdsz--;
-        buf[rdsz] = '\0';
-        __android_log_write(ANDROID_LOG_INFO, "Hengband", buf);
-    }
-    return nullptr;
-}
-
-static void start_stdio_redirection() {
-    setvbuf(stdout, nullptr, _IOLBF, 0);
-    setvbuf(stderr, nullptr, _IONBF, 0);
-    pipe(pfd);
-    dup2(pfd[1], STDOUT_FILENO);
-    dup2(pfd[1], STDERR_FILENO);
-    pthread_create(&logging_thread, nullptr, logger_thread_func, nullptr);
-    pthread_detach(logging_thread);
-}
-
 extern "C" int SDL_main(int argc, char *argv[]) {
-    start_stdio_redirection();
+    LOGI("=== Hengband Mobile Starting ===");
 
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "=== Hengband Mobile Starting ===");
+    const char *files_dir_env = getenv("FILES_DIR");
+    std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
 
-    const char *files_dir = getenv("FILES_DIR");
-    if (files_dir) {
-        chdir(files_dir);
-        setenv("HOME", files_dir, 1);
-        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Working directory: %s", files_dir);
+    if (chdir(files_dir.c_str()) != 0) {
+        LOGE("Failed to chdir to: %s", files_dir.c_str());
     }
+    LOGI("Working directory: %s", files_dir.c_str());
 
-    struct stat st;
-    if (stat("lib/edit/Monster.txt", &st) == 0) {
-        __android_log_print(ANDROID_LOG_INFO, "Hengband", "Data check PASS: Monster.txt found (%lld bytes)", (long long)st.st_size);
+    std::string lib_dir = files_dir + "/lib/";
+    std::string user_dir = files_dir + "/user/";
+
+    // 環境変数による基底パス指定（変愚蛮怒標準）
+    setenv("HOME", files_dir.c_str(), 1);
+    setenv("ANGBAND_PATH", lib_dir.c_str(), 1);
+
+    // データ整合性チェック
+    std::string test_path = lib_dir + "edit/Monster.txt";
+    std::ifstream test_file(test_path);
+    if (test_file.is_open()) {
+        LOGI("Data check PASS: Monster.txt found (%s)", test_path.c_str());
+        test_file.close();
     } else {
-        __android_log_print(ANDROID_LOG_ERROR, "Hengband", "Data check FAIL: Monster.txt still not found!");
+        LOGE("Data check FAIL: Monster.txt still not found!");
     }
 
-    // 正しい引数構文: -d<what>=<path>
-    std::string base_path = files_dir ? files_dir : ".";
-    std::string user_arg = "-duser=" + base_path + "/user/";
-    std::string lib_arg  = "-dlib="  + base_path + "/lib/";
+    // 引数の構築：-dlib は使わず、-duser のみ渡す
+    std::string arg_user = "-duser=" + user_dir;
 
-    char arg0[] = "hengband";
-    char *custom_argv[] = {
-        arg0,
-        const_cast<char *>(user_arg.c_str()),
-        const_cast<char *>(lib_arg.c_str()),
-        nullptr
-    };
-    int custom_argc = 3;
+    std::vector<char*> args;
+    args.push_back(strdup("hengband"));
+    args.push_back(strdup(arg_user.c_str()));
+    args.push_back(nullptr);
 
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Calling main with: %s %s", user_arg.c_str(), lib_arg.c_str());
+    LOGI("Calling main with: %s", args[1]);
 
-    int result = main(custom_argc, custom_argv);
-    __android_log_print(ANDROID_LOG_INFO, "Hengband", "Hengband main() returned with code: %d", result);
+    // 変愚蛮怒本体のメインループを開始
+    int result = main(args.size() - 1, args.data());
+
+    for (char* arg : args) {
+        if (arg) free(arg);
+    }
 
     return result;
 }
