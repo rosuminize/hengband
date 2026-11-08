@@ -234,13 +234,13 @@ static void display_usage(const char *program)
     puts("  -mcap    To use CAP (\"Termcap\" calls)");
 #endif /* USE_CAP */
 
+#ifdef USE_ANDROID
+    puts("  -mandroid To use Android (SDL2)");
+#endif /* USE_ANDROID */
+
     /* Actually abort the process */
     quit("");
 }
-
-#ifdef USE_ANDROID
-    puts("  -mandroid To use Android (SDL2)");
-#endif
 
 /*
  * @brief 2文字以上のコマンドライン引数 (オプション)を解析する
