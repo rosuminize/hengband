@@ -238,6 +238,10 @@ static void display_usage(const char *program)
     quit("");
 }
 
+#ifdef USE_ANDROID
+    puts("  -mandroid To use Android (SDL2)");
+#endif
+
 /*
  * @brief 2文字以上のコマンドライン引数 (オプション)を解析する
  * @param opt コマンドライン引数
@@ -500,6 +504,16 @@ int main(int argc, char *argv[])
         extern errr init_cap(int, char **);
         if (0 == init_cap(argc, argv)) {
             ANGBAND_SYS = "cap";
+            done = true;
+        }
+    }
+#endif
+
+    #ifdef USE_ANDROID
+    if (!done && (mstr.empty() || (mstr == "android") || (mstr == "sdl2"))) {
+        extern errr init_android(int, char **);
+        if (0 == init_android(argc, argv)) {
+            ANGBAND_SYS = "android";
             done = true;
         }
     }
