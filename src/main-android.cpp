@@ -32,7 +32,7 @@ static SDL_Renderer *g_renderer = nullptr;
 static TTF_Font *g_font = nullptr;
 static int g_cell_w = 12;
 static int g_cell_h = 24;
-static term_data g_term_data;
+static term_type g_term; // ★ term_data ではなく正規の term_type を使用
 
 // 標準出力ログ化
 static void start_logger_thread() {
@@ -122,11 +122,10 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
     if (!g_renderer || !g_font || !s) return 0;
 
-    // 背景消去
     Term_wipe_android(x, y, n);
 
     std::string text(s, n);
-    SDL_Color fg = { 255, 255, 255, 255 }; // 初期描画確認用白文字
+    SDL_Color fg = { 255, 255, 255, 255 };
     SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, text.c_str(), fg);
     if (!surf) return 0;
 
@@ -170,11 +169,9 @@ extern "C" errr init_android(int argc, char **argv) {
         return -1;
     }
 
-    // フォント読み込み（lib/xtra/font/ または lib/fonts/ 配下のTTF）
     const char *files_dir_env = getenv("FILES_DIR");
     std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
     
-    // システムフォントまたは同梱フォントのフォールバック探索
     std::vector<std::string> font_candidates = {
         files_dir + "/lib/xtra/font/NotoSansCJKjp-Regular.otf",
         files_dir + "/lib/xtra/font/NotoSansJP-Regular.ttf",
@@ -195,7 +192,7 @@ extern "C" errr init_android(int argc, char **argv) {
     }
 
     // 変愚蛮怒の端末初期化 (80x24)
-    term_type *t = &g_term_data.t;
+    term_type *t = &g_term;
     term_init(t, 80, 24, 256);
 
     t->init_hook = Term_init_android;
