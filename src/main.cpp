@@ -511,7 +511,7 @@ int main(int argc, char *argv[])
 
     #ifdef USE_ANDROID
     if (!done && (mstr.empty() || (mstr == "android") || (mstr == "sdl2"))) {
-        extern errr init_android(int, char **);
+        extern "C" errr init_android(int, char **); // ★ "C" を追加
         if (0 == init_android(argc, argv)) {
             ANGBAND_SYS = "android";
             done = true;
