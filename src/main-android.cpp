@@ -13,6 +13,7 @@
 
 // 変愚蛮怒の端末・基本型ヘッダー
 #include "term/gameterm.h"
+#include "term/z-term.h"
 #include "term/term-color-types.h"
 #include "system/angband.h"
 
@@ -32,9 +33,25 @@ static SDL_Renderer *g_renderer = nullptr;
 static TTF_Font *g_font = nullptr;
 static int g_cell_w = 12;
 static int g_cell_h = 24;
-static term_type g_term; // ★ term_data ではなく正規の term_type を使用
+static term_type g_term;
 
-// 標準出力ログ化
+// --- バーチャルキーパッド定義 ---
+struct VKey {
+    SDL_Rect rect;
+    const char *label;
+    char key;
+    bool is_special;
+    int special_id; // 1: KEYBOARD TOGGLE
+};
+
+static std::vector<VKey> g_vkeys;
+
+// 長押しリピート管理
+static SDL_FingerID g_holding_finger = -1;
+static char g_holding_key = 0;
+static Uint32 g_hold_start_time = 0;
+static Uint32 g_last_repeat_time = 0;
+
 static void start_logger_thread() {
     int pfd[2];
     if (pipe(pfd) == -1) return;
@@ -60,6 +77,240 @@ static void start_logger_thread() {
     }).detach();
 }
 
+// 画面解像度に応じたキーパッドのボタン配置を計算
+static void setup_virtual_keypad(int win_w, int win_h) {
+    g_vkeys.clear();
+
+    // 画面下部45%の領域に配置
+    int pad_top = static_cast<int>(win_h * 0.55);
+    int pad_h = win_h - pad_top - 40;
+    int pad_w = win_w - 40;
+
+    // 左側：3x3 テンキー
+    int dpad_w = static_cast<int>(pad_w * 0.58);
+    int btn_w = dpad_w / 3 - 8;
+    int btn_h = pad_h / 3 - 8;
+
+    const char *dpad_labels[3][3] = {
+        { "7", "8", "9" },
+        { "4", "5", "6" },
+        { "1", "2", "3" }
+    };
+
+    char dpad_keys[3][3] = {
+        { '7', '8', '9' },
+        { '4', '5', '6' },
+        { '1', '2', '3' }
+    };
+
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            SDL_Rect rc = {
+                20 + c * (btn_w + 8),
+                pad_top + r * (btn_h + 8),
+                btn_w,
+                btn_h
+            };
+            g_vkeys.push_back({ rc, dpad_labels[r][c], dpad_keys[r][c], false, 0 });
+        }
+    }
+
+    // 右側：機能キー群（ESC, RUN, SPACE, ENTER, KB）
+    int func_x = 20 + dpad_w + 16;
+    int func_w = win_w - func_x - 20;
+    int f_btn_h = pad_h / 5 - 8;
+
+    struct FuncDef {
+        const char *label;
+        char key;
+        bool is_special;
+        int special_id;
+    };
+
+    FuncDef funcs[] = {
+        { "ESC",   0x1B, false, 0 },
+        { "RUN(.)", '.', false, 0 },
+        { "SPACE", ' ',  false, 0 },
+        { "ENTER", '\r', false, 0 },
+        { "KEYBRD", 0,   true,  1 }
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        SDL_Rect rc = {
+            func_x,
+            pad_top + i * (f_btn_h + 8),
+            func_w,
+            f_btn_h
+        };
+        g_vkeys.push_back({ rc, funcs[i].label, funcs[i].key, funcs[i].is_special, funcs[i].special_id });
+    }
+}
+
+// キーパッドの描画
+static void draw_virtual_keypad() {
+    if (!g_renderer || !g_font || g_vkeys.empty()) return;
+
+    for (const auto &btn : g_vkeys) {
+        // ボタン背景（半透明風の暗灰色）
+        SDL_SetRenderDrawColor(g_renderer, 45, 52, 64, 255);
+        SDL_RenderFillRect(g_renderer, &btn.rect);
+
+        // ボタン枠線（アクセントカラー）
+        SDL_SetRenderDrawColor(g_renderer, 100, 120, 150, 255);
+        SDL_RenderDrawRect(g_renderer, &btn.rect);
+
+        // ボタンのラベル文字を描画
+        SDL_Color text_col = { 230, 235, 245, 255 };
+        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, btn.label, text_col);
+        if (surf) {
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+            if (tex) {
+                SDL_Rect dst = {
+                    btn.rect.x + (btn.rect.w - surf->w) / 2,
+                    btn.rect.y + (btn.rect.h - surf->h) / 2,
+                    surf->w,
+                    surf->h
+                };
+                SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                SDL_DestroyTexture(tex);
+            }
+            SDL_FreeSurface(surf);
+        }
+    }
+}
+
+// 座標から押されたボタンを検出
+static const VKey* hit_test_vkey(int x, int y) {
+    for (const auto &btn : g_vkeys) {
+        if (x >= btn.rect.x && x <= (btn.rect.x + btn.rect.w) &&
+            y >= btn.rect.y && y <= (btn.rect.y + btn.rect.h)) {
+            return &btn;
+        }
+    }
+    return nullptr;
+}
+
+// 長押しリピート処理（TERM_XTRA_EVENT 等から定期呼出）
+static void update_key_repeat() {
+    if (g_holding_key == 0) return;
+
+    Uint32 now = SDL_GetTicks();
+    // 初回ディレイ 250ms、リピート間隔 80ms
+    if (now - g_hold_start_time >= 250) {
+        if (now - g_last_repeat_time >= 80) {
+            Term_keypress(g_holding_key);
+            g_last_repeat_time = now;
+        }
+    }
+}
+
+// --- SDL2 イベント処理（タッチ・キーボード） ---
+static void process_sdl_events() {
+    SDL_Event ev;
+    int win_w = 1080, win_h = 2058;
+    if (g_window) {
+        SDL_GetWindowSize(g_window, &win_w, &win_h);
+    }
+
+    while (SDL_PollEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_QUIT:
+            quit("");
+            break;
+
+        case SDL_FINGERDOWN: {
+            int px = static_cast<int>(ev.tfinger.x * win_w);
+            int py = static_cast<int>(ev.tfinger.y * win_h);
+            const VKey *hit = hit_test_vkey(px, py);
+
+            if (hit) {
+                if (hit->is_special) {
+                    if (hit->special_id == 1) { // KEYBOARD
+                        if (SDL_IsTextInputActive()) {
+                            SDL_StopTextInput();
+                        } else {
+                            SDL_StartTextInput();
+                        }
+                    }
+                } else {
+                    Term_keypress(hit->key);
+                    // ホールド状態開始
+                    g_holding_finger = ev.tfinger.fingerId;
+                    g_holding_key = hit->key;
+                    g_hold_start_time = SDL_GetTicks();
+                    g_last_repeat_time = g_hold_start_time;
+                }
+            } else {
+                // キーパッド領域外のタップはスペース扱い（メッセージ送り等）
+                if (py < static_cast<int>(win_h * 0.55)) {
+                    Term_keypress(' ');
+                }
+            }
+            break;
+        }
+
+        case SDL_FINGERUP:
+            if (ev.tfinger.fingerId == g_holding_finger) {
+                g_holding_finger = -1;
+                g_holding_key = 0;
+            }
+            break;
+
+        case SDL_FINGERMOTION:
+            // 指をスライドさせてボタン外に出たらホールド解除
+            if (ev.tfinger.fingerId == g_holding_finger) {
+                int px = static_cast<int>(ev.tfinger.x * win_w);
+                int py = static_cast<int>(ev.tfinger.y * win_h);
+                const VKey *hit = hit_test_vkey(px, py);
+                if (!hit || hit->key != g_holding_key) {
+                    g_holding_finger = -1;
+                    g_holding_key = 0;
+                }
+            }
+            break;
+
+        case SDL_TEXTINPUT:
+            for (const char *p = ev.text.text; *p; ++p) {
+                Term_keypress(static_cast<unsigned char>(*p));
+            }
+            break;
+
+        case SDL_KEYDOWN:
+            switch (ev.key.keysym.sym) {
+            case SDLK_RETURN:
+            case SDLK_KP_ENTER: Term_keypress('\r'); break;
+            case SDLK_ESCAPE:
+            case SDLK_AC_BACK:  Term_keypress(0x1B); break;
+            case SDLK_BACKSPACE:Term_keypress(0x08); break;
+            case SDLK_TAB:      Term_keypress('\t'); break;
+            case SDLK_SPACE:    Term_keypress(' ');  break;
+            case SDLK_UP:    Term_keypress('8'); break;
+            case SDLK_DOWN:  Term_keypress('2'); break;
+            case SDLK_LEFT:  Term_keypress('4'); break;
+            case SDLK_RIGHT: Term_keypress('6'); break;
+            case SDLK_HOME:     Term_keypress('7'); break;
+            case SDLK_PAGEUP:   Term_keypress('9'); break;
+            case SDLK_END:      Term_keypress('1'); break;
+            case SDLK_PAGEDOWN: Term_keypress('3'); break;
+            case SDLK_KP_1: Term_keypress('1'); break;
+            case SDLK_KP_2: Term_keypress('2'); break;
+            case SDLK_KP_3: Term_keypress('3'); break;
+            case SDLK_KP_4: Term_keypress('4'); break;
+            case SDLK_KP_5: Term_keypress('5'); break;
+            case SDLK_KP_6: Term_keypress('6'); break;
+            case SDLK_KP_7: Term_keypress('7'); break;
+            case SDLK_KP_8: Term_keypress('8'); break;
+            case SDLK_KP_9: Term_keypress('9'); break;
+            default: break;
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+}
+
 // --- 変愚蛮怒 Term コールバック群 ---
 
 static void Term_init_android(term_type *t) {
@@ -78,7 +329,6 @@ static errr Term_user_android(int n) {
 }
 
 static errr Term_xtra_android(int n, int v) {
-    (void)v;
     switch (n) {
     case TERM_XTRA_CLEAR:
         if (g_renderer) {
@@ -86,15 +336,28 @@ static errr Term_xtra_android(int n, int v) {
             SDL_RenderClear(g_renderer);
         }
         return 0;
+
     case TERM_XTRA_FRESH:
         if (g_renderer) {
+            draw_virtual_keypad();
             SDL_RenderPresent(g_renderer);
         }
         return 0;
+
     case TERM_XTRA_EVENT:
+        process_sdl_events();
+        update_key_repeat();
+        if (v) {
+            SDL_Delay(15);
+        }
+        return 0;
+
     case TERM_XTRA_FLUSH:
     case TERM_XTRA_BORED:
+        process_sdl_events();
+        update_key_repeat();
         return 0;
+
     default:
         return 1;
     }
@@ -168,6 +431,8 @@ extern "C" errr init_android(int argc, char **argv) {
         LOGE("Renderer creation failed: %s", SDL_GetError());
         return -1;
     }
+
+    setup_virtual_keypad(1080, 2058);
 
     const char *files_dir_env = getenv("FILES_DIR");
     std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
