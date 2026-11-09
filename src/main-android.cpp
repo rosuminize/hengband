@@ -5,11 +5,14 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <cstdlib>
+#include <clocale>
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <deque>
 #include <string>
 #include <thread>
+#include <mutex>
 
 // 変愚蛮怒の端末・基本型ヘッダー
 #include "term/gameterm.h"
@@ -27,15 +30,29 @@
 
 extern int main(int argc, char *argv[]);
 
-// --- SDL2 描画用グローバルリソース ---
+// --- SDL2 描画用リソース ---
 static SDL_Window *g_window = nullptr;
 static SDL_Renderer *g_renderer = nullptr;
-static TTF_Font *g_font = nullptr;
+static TTF_Font *g_font_game = nullptr;
+static TTF_Font *g_font_msg = nullptr;
+static TTF_Font *g_font_btn = nullptr;
+
+// 画面分割レイアウト座標
+static SDL_Rect g_rect_game; // 上部 55%
+static SDL_Rect g_rect_msg;  // 中間 10%
+static SDL_Rect g_rect_pad;  // 下部 35%
+
 static int g_cell_w = 12;
 static int g_cell_h = 24;
 static term_type g_term;
 
-// 変愚蛮怒のキーバッファへの確実な注入
+// メッセージログバッファ（直近のメッセージを保持）
+static std::deque<std::string> g_message_history;
+static std::mutex g_msg_mutex;
+static std::string g_current_menu_text = "";
+static bool g_in_menu_mode = false;
+
+// 変愚蛮怒のキーバッファへの注入
 static inline void send_key(int ch) {
     term_key_push(ch);
 }
@@ -46,7 +63,7 @@ struct VKey {
     const char *label;
     char key;
     bool is_special;
-    int special_id; // 1: KEYBOARD TOGGLE
+    int special_id;
 };
 
 static std::vector<VKey> g_vkeys;
@@ -82,17 +99,36 @@ static void start_logger_thread() {
     }).detach();
 }
 
-// 画面解像度に応じたキーパッドのボタン配置を計算
-static void setup_virtual_keypad(int win_w, int win_h) {
+// 55% / 10% / 35% の画面分割レイアウト計算
+static void setup_layout(int win_w, int win_h) {
+    // 1. 上部 55%: メインゲーム画面
+    g_rect_game.x = 0;
+    g_rect_game.y = 0;
+    g_rect_game.w = win_w;
+    g_rect_game.h = static_cast<int>(win_h * 0.55);
+
+    // 80文字×22行程度がすっぽり収まるセルサイズ
+    g_cell_w = win_w / 80;
+    if (g_cell_w < 12) g_cell_w = 12;
+    g_cell_h = g_rect_game.h / 24;
+
+    // 2. 中間 10%: メッセージ＆メニュー共用エリア
+    g_rect_msg.x = 8;
+    g_rect_msg.y = g_rect_game.h + 4;
+    g_rect_msg.w = win_w - 16;
+    g_rect_msg.h = static_cast<int>(win_h * 0.10) - 8;
+
+    // 3. 下部 35%: バーチャルキーパッド
+    g_rect_pad.x = 10;
+    g_rect_pad.y = g_rect_msg.y + g_rect_msg.h + 8;
+    g_rect_pad.w = win_w - 20;
+    g_rect_pad.h = win_h - g_rect_pad.y - 10;
+
+    // キーパッドボタン配置
     g_vkeys.clear();
-
-    int pad_top = static_cast<int>(win_h * 0.55);
-    int pad_h = win_h - pad_top - 40;
-    int pad_w = win_w - 40;
-
-    int dpad_w = static_cast<int>(pad_w * 0.58);
-    int btn_w = dpad_w / 3 - 8;
-    int btn_h = pad_h / 3 - 8;
+    int dpad_w = static_cast<int>(g_rect_pad.w * 0.60);
+    int btn_w = dpad_w / 3 - 6;
+    int btn_h = g_rect_pad.h / 3 - 6;
 
     const char *dpad_labels[3][3] = {
         { "7", "8", "9" },
@@ -109,8 +145,8 @@ static void setup_virtual_keypad(int win_w, int win_h) {
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
             SDL_Rect rc = {
-                20 + c * (btn_w + 8),
-                pad_top + r * (btn_h + 8),
+                g_rect_pad.x + c * (btn_w + 6),
+                g_rect_pad.y + r * (btn_h + 6),
                 btn_w,
                 btn_h
             };
@@ -118,9 +154,10 @@ static void setup_virtual_keypad(int win_w, int win_h) {
         }
     }
 
-    int func_x = 20 + dpad_w + 16;
-    int func_w = win_w - func_x - 20;
-    int f_btn_h = pad_h / 5 - 8;
+    // 右側：機能キー（ESC, RUN, SPACE, ENTER, KB）
+    int func_x = g_rect_pad.x + dpad_w + 10;
+    int func_w = g_rect_pad.w - dpad_w - 10;
+    int f_btn_h = g_rect_pad.h / 5 - 6;
 
     struct FuncDef {
         const char *label;
@@ -140,7 +177,7 @@ static void setup_virtual_keypad(int win_w, int win_h) {
     for (int i = 0; i < 5; ++i) {
         SDL_Rect rc = {
             func_x,
-            pad_top + i * (f_btn_h + 8),
+            g_rect_pad.y + i * (f_btn_h + 6),
             func_w,
             f_btn_h
         };
@@ -148,31 +185,85 @@ static void setup_virtual_keypad(int win_w, int win_h) {
     }
 }
 
-static void draw_virtual_keypad() {
-    if (!g_renderer || !g_font || g_vkeys.empty()) return;
+// メッセージログ＆メニューエリアの描画
+static void draw_message_area() {
+    if (!g_renderer || !g_font_msg) return;
 
-    for (const auto &btn : g_vkeys) {
-        SDL_SetRenderDrawColor(g_renderer, 45, 52, 64, 255);
-        SDL_RenderFillRect(g_renderer, &btn.rect);
+    // エリア背景（スレートダーク）
+    SDL_SetRenderDrawColor(g_renderer, 24, 28, 36, 255);
+    SDL_RenderFillRect(g_renderer, &g_rect_msg);
 
-        SDL_SetRenderDrawColor(g_renderer, 100, 120, 150, 255);
-        SDL_RenderDrawRect(g_renderer, &btn.rect);
+    // 枠線（水色アクセント）
+    SDL_SetRenderDrawColor(g_renderer, 70, 90, 120, 255);
+    SDL_RenderDrawRect(g_renderer, &g_rect_msg);
 
-        SDL_Color text_col = { 230, 235, 245, 255 };
-        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, btn.label, text_col);
+    std::lock_guard<std::mutex> lock(g_msg_mutex);
+
+    if (g_in_menu_mode && !g_current_menu_text.empty()) {
+        // 【メニュー表示モード】
+        SDL_Color col = { 255, 230, 140, 255 }; // メニューは黄色
+        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_current_menu_text.c_str(), col);
         if (surf) {
             SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
             if (tex) {
-                SDL_Rect dst = {
-                    btn.rect.x + (btn.rect.w - surf->w) / 2,
-                    btn.rect.y + (btn.rect.h - surf->h) / 2,
-                    surf->w,
-                    surf->h
-                };
+                SDL_Rect dst = { g_rect_msg.x + 10, g_rect_msg.y + 6, surf->w, surf->h };
                 SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
                 SDL_DestroyTexture(tex);
             }
             SDL_FreeSurface(surf);
+        }
+    } else {
+        // 【通常メッセージログ表示モード（最新2行）】
+        int line_y = g_rect_msg.y + 6;
+        size_t count = g_message_history.size();
+        size_t start = count > 2 ? count - 2 : 0;
+
+        for (size_t i = start; i < count; ++i) {
+            SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 170, 175, 185, 255 };
+            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_message_history[i].c_str(), col);
+            if (surf) {
+                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+                if (tex) {
+                    SDL_Rect dst = { g_rect_msg.x + 10, line_y, surf->w, surf->h };
+                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                    SDL_DestroyTexture(tex);
+                }
+                SDL_FreeSurface(surf);
+            }
+            line_y += 24;
+        }
+    }
+}
+
+// キーパッドの描画
+static void draw_virtual_keypad() {
+    if (!g_renderer || g_vkeys.empty()) return;
+    TTF_Font *use_font = g_font_btn ? g_font_btn : g_font_game;
+
+    for (const auto &btn : g_vkeys) {
+        SDL_SetRenderDrawColor(g_renderer, 42, 48, 60, 255);
+        SDL_RenderFillRect(g_renderer, &btn.rect);
+
+        SDL_SetRenderDrawColor(g_renderer, 90, 110, 140, 255);
+        SDL_RenderDrawRect(g_renderer, &btn.rect);
+
+        if (use_font) {
+            SDL_Color text_col = { 235, 240, 250, 255 };
+            SDL_Surface *surf = TTF_RenderUTF8_Blended(use_font, btn.label, text_col);
+            if (surf) {
+                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+                if (tex) {
+                    SDL_Rect dst = {
+                        btn.rect.x + (btn.rect.w - surf->w) / 2,
+                        btn.rect.y + (btn.rect.h - surf->h) / 2,
+                        surf->w,
+                        surf->h
+                    };
+                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                    SDL_DestroyTexture(tex);
+                }
+                SDL_FreeSurface(surf);
+            }
         }
     }
 }
@@ -199,7 +290,6 @@ static void update_key_repeat() {
     }
 }
 
-// --- SDL2 イベント処理 ---
 static void process_sdl_events() {
     SDL_Event ev;
     int win_w = 1080, win_h = 2058;
@@ -235,7 +325,8 @@ static void process_sdl_events() {
                     g_last_repeat_time = g_hold_start_time;
                 }
             } else {
-                if (py < static_cast<int>(win_h * 0.55)) {
+                // ゲーム画面またはメッセージエリアのタップは決定・進む
+                if (py < g_rect_pad.y) {
                     send_key(' ');
                 }
             }
@@ -331,6 +422,7 @@ static errr Term_xtra_android(int n, int v) {
 
     case TERM_XTRA_FRESH:
         if (g_renderer) {
+            draw_message_area();
             draw_virtual_keypad();
             SDL_RenderPresent(g_renderer);
         }
@@ -367,7 +459,12 @@ static errr Term_bigcurs_android(int x, int y) {
 
 static errr Term_wipe_android(int x, int y, int n) {
     if (!g_renderer) return 0;
-    SDL_Rect r = { x * g_cell_w, y * g_cell_h, n * g_cell_w, g_cell_h };
+    SDL_Rect r = {
+        g_rect_game.x + x * g_cell_w,
+        g_rect_game.y + y * g_cell_h,
+        n * g_cell_w,
+        g_cell_h
+    };
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderFillRect(g_renderer, &r);
     return 0;
@@ -375,18 +472,37 @@ static errr Term_wipe_android(int x, int y, int n) {
 
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
-    if (!g_renderer || !g_font || !s) return 0;
-
-    Term_wipe_android(x, y, n);
+    if (!g_renderer || !g_font_game || !s) return 0;
 
     std::string text(s, n);
+
+    // 0行目（最上段）に来るメッセージを変愚蛮怒からフックして中間ログエリアに蓄積
+    if (y == 0 && text.find_first_not_of(" ") != std::string::npos) {
+        std::lock_guard<std::mutex> lock(g_msg_mutex);
+        // 重複登録を避けて直近履歴に追加
+        if (g_message_history.empty() || g_message_history.back() != text) {
+            g_message_history.push_back(text);
+            if (g_message_history.size() > 50) {
+                g_message_history.pop_front();
+            }
+        }
+    }
+
+    // ゲーム画面上部の文字描画
+    Term_wipe_android(x, y, n);
+
     SDL_Color fg = { 255, 255, 255, 255 };
-    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font, text.c_str(), fg);
+    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, text.c_str(), fg);
     if (!surf) return 0;
 
     SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
     if (tex) {
-        SDL_Rect dst = { x * g_cell_w, y * g_cell_h, surf->w, surf->h };
+        SDL_Rect dst = {
+            g_rect_game.x + x * g_cell_w,
+            g_rect_game.y + y * g_cell_h,
+            surf->w,
+            surf->h
+        };
         SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
         SDL_DestroyTexture(tex);
     }
@@ -424,7 +540,9 @@ extern "C" errr init_android(int argc, char **argv) {
         return -1;
     }
 
-    setup_virtual_keypad(1080, 2058);
+    int win_w = 1080, win_h = 2058;
+    SDL_GetWindowSize(g_window, &win_w, &win_h);
+    setup_layout(win_w, win_h);
 
     const char *files_dir_env = getenv("FILES_DIR");
     std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
@@ -436,16 +554,23 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
+    // ゲーム画面用フォント（セルの高さに合わせたサイズ）
+    int game_pt = static_cast<int>(g_cell_h * 0.76);
     for (const auto &path : font_candidates) {
-        g_font = TTF_OpenFont(path.c_str(), 18);
-        if (g_font) {
-            LOGI("Loaded font from: %s", path.c_str());
-            break;
-        }
+        g_font_game = TTF_OpenFont(path.c_str(), game_pt);
+        if (g_font_game) break;
     }
 
-    if (!g_font) {
-        LOGE("WARNING: No font loaded! Text will not render.");
+    // メッセージログ用フォント（少し大きめで読みやすく）
+    for (const auto &path : font_candidates) {
+        g_font_msg = TTF_OpenFont(path.c_str(), 18);
+        if (g_font_msg) break;
+    }
+
+    // ボタン用フォント
+    for (const auto &path : font_candidates) {
+        g_font_btn = TTF_OpenFont(path.c_str(), 22);
+        if (g_font_btn) break;
     }
 
     // 変愚蛮怒の端末初期化 (80x24)
@@ -464,13 +589,19 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Term activated.");
+    LOGI("init_android succeeded! Term activated with 3-pane layout.");
     return 0;
 }
 
 extern "C" int SDL_main(int argc, char *argv[]) {
     start_logger_thread();
     LOGI("=== Hengband Mobile Starting ===");
+
+    // 日本語環境変数の適用
+    setenv("LANG", "ja_JP.UTF-8", 1);
+    setenv("LC_ALL", "ja_JP.UTF-8", 1);
+    setenv("LC_CTYPE", "ja_JP.UTF-8", 1);
+    std::setlocale(LC_ALL, "ja_JP.UTF-8");
 
     const char *files_dir_env = getenv("FILES_DIR");
     std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
@@ -494,7 +625,7 @@ extern "C" int SDL_main(int argc, char *argv[]) {
     args.push_back(strdup(arg_user.c_str()));
     args.push_back(nullptr);
 
-    LOGI("Calling REAL Hengband main() with: %s %s", args[1], args[2]);
+    LOGI("Calling REAL Hengband main() with: %s %s (LANG=ja_JP.UTF-8)", args[1], args[2]);
 
     int result = main(static_cast<int>(args.size() - 1), args.data());
 
