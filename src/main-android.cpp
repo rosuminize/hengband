@@ -37,8 +37,7 @@ static term_type g_term;
 
 // 変愚蛮怒のキーバッファへの確実な注入
 static inline void send_key(int ch) {
-    // z-term.h で定義されている正規の term_keypress(char) または term_key_push を呼ぶ
-    term_keypress(static_cast<char>(ch));
+    term_key_push(ch);
 }
 
 // --- バーチャルキーパッド定義 ---
