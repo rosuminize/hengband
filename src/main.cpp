@@ -37,6 +37,10 @@
 #include <string>
 #include <string_view>
 
+#ifdef USE_ANDROID
+extern "C" errr init_android(int argc, char **argv);
+#endif
+
 /*
  * Available graphic modes
  */
@@ -177,37 +181,37 @@ static void display_usage(const char *program)
 {
     /* Dump usage information */
     fmt::println("Usage: {} [options] [-- subopts]", program);
-    puts("  -n       Start a new character");
-    puts("  -f       Request fiddle mode");
-    puts("  -w       Request wizard mode");
-    puts("  -b       Request BGM mode");
-    puts("  -v       Request sound mode");
-    puts("  -g       Request graphics mode");
-    puts("  -o       Request original keyset");
-    puts("  -r       Request rogue-like keyset");
-    puts("  -M       Request monochrome mode");
+    puts("  -n        Start a new character");
+    puts("  -f        Request fiddle mode");
+    puts("  -w        Request wizard mode");
+    puts("  -b        Request BGM mode");
+    puts("  -v        Request sound mode");
+    puts("  -g        Request graphics mode");
+    puts("  -o        Request original keyset");
+    puts("  -r        Request rogue-like keyset");
+    puts("  -M        Request monochrome mode");
     puts("  -s<num>  Show <num> high scores");
     puts("  -u<who>  Use your <who> savefile");
     puts("  -m<sys>  Force 'main-<sys>.c' usage");
     puts("  -d<def>  Define a 'lib' dir sub-path");
     puts("  --output-spoilers");
-    puts("           Output auto generated spoilers and exit");
+    puts("            Output auto generated spoilers and exit");
     puts("  --bot-json-output[=path]");
-    puts("           Output bot-readable JSON Lines snapshots before player input");
+    puts("            Output bot-readable JSON Lines snapshots before player input");
     puts("  --bot-json-timing");
-    puts("           Enable emitter timing log beside the JSONL file (default: off; not for stdout)");
+    puts("            Enable emitter timing log beside the JSONL file (default: off; not for stdout)");
     puts("  --control-port=<port>");
-    puts("           Listen on 127.0.0.1:<port> to be controlled by an external program");
+    puts("            Listen on 127.0.0.1:<port> to be controlled by an external program");
     puts("  --fixed-seed=<seed>");
-    puts("           Fix the initial random seed to make a playthrough reproducible");
+    puts("            Fix the initial random seed to make a playthrough reproducible");
     puts("  --headless");
-    puts("           Use the terminal which has no real display and no real input");
-    puts("           device (requires --control-port, conflicts with -s and -m)");
+    puts("            Use the terminal which has no real display and no real input");
+    puts("            device (requires --control-port, conflicts with -s and -m)");
     puts("  --headless-term-count=<num>");
-    puts("           Number of terminals the headless frontend creates (default 1)");
+    puts("            Number of terminals the headless frontend creates (default 1)");
     puts("  --headless-term-size=<index>:<cols>x<rows>");
-    puts("           Size of the terminal <index> the headless frontend creates");
-    puts("           (default 80x24, can be repeated for each terminal)");
+    puts("            Size of the terminal <index> the headless frontend creates");
+    puts("            (default 80x24, can be repeated for each terminal)");
     puts("");
 
 #ifdef USE_X11
@@ -509,9 +513,8 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    #ifdef USE_ANDROID
+#ifdef USE_ANDROID
     if (!done && (mstr.empty() || (mstr == "android") || (mstr == "sdl2"))) {
-        extern "C" errr init_android(int, char **); // ★ "C" を追加
         if (0 == init_android(argc, argv)) {
             ANGBAND_SYS = "android";
             done = true;
