@@ -13,6 +13,7 @@
 
 // 変愚蛮怒の端末・基本型ヘッダー
 #include "term/gameterm.h"
+#include "term/z-term.h"
 #include "term/term-color-types.h"
 #include "system/angband.h"
 
@@ -24,13 +25,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// キー入力注入用（term_keypress / Term_keypress の両方に対応できるよう宣言）
-extern errr term_keypress(int ch);
-
-static inline void send_key(int ch) {
-    term_keypress(ch);
-}
-
 extern int main(int argc, char *argv[]);
 
 // --- SDL2 描画用グローバルリソース ---
@@ -40,6 +34,12 @@ static TTF_Font *g_font = nullptr;
 static int g_cell_w = 12;
 static int g_cell_h = 24;
 static term_type g_term;
+
+// 変愚蛮怒のキーバッファへの確実な注入
+static inline void send_key(int ch) {
+    // z-term.h で定義されている正規の term_keypress(char) または term_key_push を呼ぶ
+    term_keypress(static_cast<char>(ch));
+}
 
 // --- バーチャルキーパッド定義 ---
 struct VKey {
