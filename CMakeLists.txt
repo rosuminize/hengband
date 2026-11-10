@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(HengbandMobile C CXX)
 
+add_definitions(-DJP)
+
 include(FetchContent)
 
 set(CMAKE_CXX_STANDARD 20)
