@@ -63,6 +63,21 @@ static inline void send_key(int ch) {
     term_key_push(ch);
 }
 
+// EUC-JP から UTF-8 への安全な相互変換
+static std::string euc_to_utf8(const char *src, size_t len) {
+    if (!src || len == 0) return "";
+    std::string raw(src, len);
+
+    // SDL2 組み込みの iconv を利用
+    char *utf8_buf = SDL_iconv_string("UTF-8", "EUC-JP", raw.c_str(), raw.length() + 1);
+    if (utf8_buf) {
+        std::string result(utf8_buf);
+        SDL_free(utf8_buf);
+        return result;
+    }
+    return raw; // 変換不能時はフォールバック
+}
+
 // --- バーチャルキーパッド定義 ---
 struct VKey {
     SDL_Rect rect;
@@ -116,7 +131,7 @@ static void setup_layout(int win_w, int win_h) {
     g_rect_msg.x = 8;
     g_rect_msg.y = g_rect_game.y + g_rect_game.h + 6;
     g_rect_msg.w = win_w - 16;
-    g_rect_msg.h = 230; // 複数行のメニュー項目や案内文がしっかり読める高さ
+    g_rect_msg.h = 230;
 
     // 3. 下部：バーチャルキーパッドエリア
     g_rect_pad.x = 8;
@@ -183,14 +198,12 @@ static void setup_layout(int win_w, int win_h) {
     }
 }
 
-// 中間領域の描画（メニュー展開時はメニュー優先、非メニュー時はメッセージログ）
 static void draw_middle_area() {
     if (!g_renderer || !g_font_msg) return;
 
     SDL_SetRenderDrawColor(g_renderer, 18, 22, 30, 255);
     SDL_RenderFillRect(g_renderer, &g_rect_msg);
 
-    // 状態に応じた枠線色（メニュー時は黄色、通常ログ時は青色）
     if (g_menu_active && !g_menu_lines.empty()) {
         SDL_SetRenderDrawColor(g_renderer, 200, 160, 40, 255);
     } else {
@@ -202,9 +215,8 @@ static void draw_middle_area() {
     int line_y = g_rect_msg.y + 8;
 
     if (g_menu_active && !g_menu_lines.empty()) {
-        // ★ メニュー表示モード：メッセージログを消してメニュー内容を描画 ★
         for (const auto &m_line : g_menu_lines) {
-            SDL_Color col = { 255, 230, 110, 255 }; // メニューは視認性の高い黄色
+            SDL_Color col = { 255, 230, 110, 255 };
             SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, m_line.c_str(), col);
             if (surf) {
                 SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
@@ -219,7 +231,6 @@ static void draw_middle_area() {
             if (line_y + 30 > g_rect_msg.y + g_rect_msg.h) break;
         }
     } else {
-        // ★ 通常モード：直近のメッセージログを蓄積表示 ★
         if (!g_message_history.empty()) {
             size_t count = g_message_history.size();
             size_t max_lines = 5;
@@ -489,13 +500,12 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
     if (!g_renderer || !g_font_game || !g_term_target || !s) return 0;
 
-    std::string text(s, n);
+    // ★ EUC-JP の文字列を UTF-8 に自動デコード ★
+    std::string text = euc_to_utf8(s, n);
 
-    // ★ メッセージログとメニュー表示の自動判定＆フック ★
     if (text.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
 
-        // 1. メニュー・選択モードの判定（「どの」「ESC」「コマンド:」「アイテム」などのキーワードや末尾行）
         bool is_menu_signal = (text.find("どの") != std::string::npos ||
                                text.find("ESC") != std::string::npos ||
                                text.find("コマンド") != std::string::npos ||
@@ -509,14 +519,12 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
                 g_menu_lines.erase(g_menu_lines.begin());
             }
         } else if (y == 0) {
-            // 2. 通常メッセージ（0行目）
             if (g_message_history.empty() || g_message_history.back() != text) {
                 g_message_history.push_back(text);
                 if (g_message_history.size() > 30) {
                     g_message_history.pop_front();
                 }
             }
-            // 通常メッセージが出たときはメニュー状態を解除してログ表示に戻す
             g_menu_active = false;
             g_menu_lines.clear();
         }
@@ -570,7 +578,6 @@ extern "C" errr init_android(int argc, char **argv) {
         return -1;
     }
 
-    // 内部仮想テクスチャ (1760 x 1080)
     g_term_target = SDL_CreateTexture(g_renderer,
                                       SDL_PIXELFORMAT_RGBA8888,
                                       SDL_TEXTUREACCESS_TARGET,
@@ -590,19 +597,16 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
-    // ゲーム画面フォント（セル高45pxに合わせた特大34pt）
     for (const auto &path : font_candidates) {
         g_font_game = TTF_OpenFont(path.c_str(), 34);
         if (g_font_game) break;
     }
 
-    // 中間エリア用フォント（22pt）
     for (const auto &path : font_candidates) {
         g_font_msg = TTF_OpenFont(path.c_str(), 22);
         if (g_font_msg) break;
     }
 
-    // キーパッド用フォント（32pt）
     for (const auto &path : font_candidates) {
         g_font_btn = TTF_OpenFont(path.c_str(), 32);
         if (g_font_btn) break;
