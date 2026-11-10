@@ -39,18 +39,16 @@ static TTF_Font *g_font_btn = nullptr;
 static SDL_Texture *g_term_target = nullptr;
 
 // 画面分割レイアウト座標
-static SDL_Rect g_rect_game; // 上部 1:1 正方形ゲーム画面
+static SDL_Rect g_rect_game; // 上部 ゲーム画面（80文字ピッタリ収まる端切れゼロ枠）
 static SDL_Rect g_rect_msg;  // 中間 メッセージログ／メニュー共用エリア
 static SDL_Rect g_rect_pad;  // 下部 操作キーパッド
 
-// ★ 文字サイズ1.5倍基準の内部仮想解像度 ★
-// 縦24行が正方形(1080px)に収まるセル高さ: 45px
-// 文字縦横比(1:2)を完全維持したセル幅: 22px
-// 80文字 x 24行 の内部テクスチャサイズ = 1760 x 1080
-static const int V_CELL_W = 22;
-static const int V_CELL_H = 45;
-static const int V_TERM_W = V_CELL_W * 80; // 1760
-static const int V_TERM_H = V_CELL_H * 24; // 1080
+// ★ 80文字 x 24行 を高精細に描画する内部仮想解像度 ★
+// 内部テクスチャを高解像度（1600 x 960）で生成し、滑らかに画面幅（1080 x 648）へ縮小転送
+static const int V_CELL_W = 20;
+static const int V_CELL_H = 40;
+static const int V_TERM_W = V_CELL_W * 80; // 1600
+static const int V_TERM_H = V_CELL_H * 24; // 960
 static term_type g_term;
 
 // メッセージログ＆メニュー共用バッファ
@@ -63,19 +61,50 @@ static inline void send_key(int ch) {
     term_key_push(ch);
 }
 
-// EUC-JP から UTF-8 への安全な相互変換
-static std::string euc_to_utf8(const char *src, size_t len) {
+// EUC-JP から UTF-8 への安全な相互変換（途中で切れた漢字バイトを保護して豆腐化を防止）
+static std::string euc_to_utf8_safe(const char *src, size_t len) {
     if (!src || len == 0) return "";
-    std::string raw(src, len);
 
-    // SDL2 組み込みの iconv を利用
+    size_t valid_len = 0;
+    for (size_t i = 0; i < len; ) {
+        unsigned char c = static_cast<unsigned char>(src[i]);
+        if (c >= 0xA1 && c <= 0xFE) {
+            if (i + 1 < len) {
+                i += 2;
+                valid_len = i;
+            } else {
+                break;
+            }
+        } else if (c == 0x8E) {
+            if (i + 1 < len) {
+                i += 2;
+                valid_len = i;
+            } else {
+                break;
+            }
+        } else if (c == 0x8F) {
+            if (i + 2 < len) {
+                i += 3;
+                valid_len = i;
+            } else {
+                break;
+            }
+        } else {
+            i += 1;
+            valid_len = i;
+        }
+    }
+
+    if (valid_len == 0) return "";
+
+    std::string raw(src, valid_len);
     char *utf8_buf = SDL_iconv_string("UTF-8", "EUC-JP", raw.c_str(), raw.length() + 1);
     if (utf8_buf) {
         std::string result(utf8_buf);
         SDL_free(utf8_buf);
         return result;
     }
-    return raw; // 変換不能時はフォールバック
+    return "";
 }
 
 // --- バーチャルキーパッド定義 ---
@@ -119,25 +148,26 @@ static void start_logger_thread() {
     }).detach();
 }
 
-// 1:1 正方形 + 中間共用枠 + 下部キーパッドの配置計算
+// 端切れを完全に無くすアスペクト比維持レイアウト計算
 static void setup_layout(int win_w, int win_h) {
-    // 1. 上部：完全な 1:1 正方形（1080 x 1080）
+    // 1. 上部：横80文字が画面幅（1080px）にピッタリ収まるゲーム画面
+    // 比率 1600 : 960 = 5 : 3 -> 高さ = 1080 * 3 / 5 = 648px
     g_rect_game.x = 0;
-    g_rect_game.y = 0;
+    g_rect_game.y = 4;
     g_rect_game.w = win_w;
-    g_rect_game.h = win_w;
+    g_rect_game.h = static_cast<int>(win_w * 960.0f / 1600.0f); // 648px
 
-    // 2. 中間：メッセージログ／メニュー共用エリア
+    // 2. 中間：メッセージログ＆メニュー共用エリア（広めの 280px）
     g_rect_msg.x = 8;
-    g_rect_msg.y = g_rect_game.y + g_rect_game.h + 6;
+    g_rect_msg.y = g_rect_game.y + g_rect_game.h + 8;
     g_rect_msg.w = win_w - 16;
-    g_rect_msg.h = 230;
+    g_rect_msg.h = 280;
 
-    // 3. 下部：バーチャルキーパッドエリア
+    // 3. 下部：バーチャルキーパッドエリア（残りすべて）
     g_rect_pad.x = 8;
     g_rect_pad.y = g_rect_msg.y + g_rect_msg.h + 8;
     g_rect_pad.w = win_w - 16;
-    g_rect_pad.h = win_h - g_rect_pad.y - 10;
+    g_rect_pad.h = win_h - g_rect_pad.y - 12;
 
     g_vkeys.clear();
     int dpad_w = static_cast<int>(g_rect_pad.w * 0.60);
@@ -233,7 +263,7 @@ static void draw_middle_area() {
     } else {
         if (!g_message_history.empty()) {
             size_t count = g_message_history.size();
-            size_t max_lines = 5;
+            size_t max_lines = 6;
             size_t start = count > max_lines ? count - max_lines : 0;
 
             for (size_t i = start; i < count; ++i) {
@@ -446,9 +476,8 @@ static errr Term_xtra_android(int n, int v) {
             SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
             SDL_RenderClear(g_renderer);
 
-            // 1:1 正方形エリアへ転送
-            SDL_Rect src_rect = { 0, 0, 1080, 1080 };
-            SDL_RenderCopy(g_renderer, g_term_target, &src_rect, &g_rect_game);
+            // ★ 80列 x 24行 全体を 1ドットも欠けずに画面上部（1080 x 648）へ完全フィット描画 ★
+            SDL_RenderCopy(g_renderer, g_term_target, nullptr, &g_rect_game);
 
             draw_middle_area();
             draw_virtual_keypad();
@@ -500,8 +529,9 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
     if (!g_renderer || !g_font_game || !g_term_target || !s) return 0;
 
-    // ★ EUC-JP の文字列を UTF-8 に自動デコード ★
-    std::string text = euc_to_utf8(s, n);
+    // 途中で切れたEUCバイトを安全に保護してUTF-8化
+    std::string text = euc_to_utf8_safe(s, n);
+    if (text.empty()) return 0;
 
     if (text.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
@@ -597,8 +627,9 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
+    // 内部セル高さ 40px に合わせたフォントサイズ 30pt
     for (const auto &path : font_candidates) {
-        g_font_game = TTF_OpenFont(path.c_str(), 34);
+        g_font_game = TTF_OpenFont(path.c_str(), 30);
         if (g_font_game) break;
     }
 
@@ -627,7 +658,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Full 3-pane layout active.");
+    LOGI("init_android succeeded! Full-fit aspect layout active.");
     return 0;
 }
 
