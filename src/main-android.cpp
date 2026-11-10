@@ -36,23 +36,29 @@ static SDL_Renderer *g_renderer = nullptr;
 static TTF_Font *g_font_game = nullptr;
 static TTF_Font *g_font_msg = nullptr;
 static TTF_Font *g_font_btn = nullptr;
+static SDL_Texture *g_term_target = nullptr;
 
 // 画面分割レイアウト座標
-static SDL_Rect g_rect_game; // 上部 55%
-static SDL_Rect g_rect_msg;  // 中間 10%
-static SDL_Rect g_rect_pad;  // 下部 35%
+static SDL_Rect g_rect_game; // 上部 1:1 正方形ゲーム画面
+static SDL_Rect g_rect_msg;  // 中間 メッセージログ／メニュー共用エリア
+static SDL_Rect g_rect_pad;  // 下部 操作キーパッド
 
-static int g_cell_w = 12;
-static int g_cell_h = 24;
+// ★ 文字サイズ1.5倍基準の内部仮想解像度 ★
+// 縦24行が正方形(1080px)に収まるセル高さ: 45px
+// 文字縦横比(1:2)を完全維持したセル幅: 22px
+// 80文字 x 24行 の内部テクスチャサイズ = 1760 x 1080
+static const int V_CELL_W = 22;
+static const int V_CELL_H = 45;
+static const int V_TERM_W = V_CELL_W * 80; // 1760
+static const int V_TERM_H = V_CELL_H * 24; // 1080
 static term_type g_term;
 
-// メッセージログバッファ（直近のメッセージを保持）
+// メッセージログ＆メニュー共用バッファ
 static std::deque<std::string> g_message_history;
+static std::vector<std::string> g_menu_lines;
+static bool g_menu_active = false;
 static std::mutex g_msg_mutex;
-static std::string g_current_menu_text = "";
-static bool g_in_menu_mode = false;
 
-// 変愚蛮怒のキーバッファへの注入
 static inline void send_key(int ch) {
     term_key_push(ch);
 }
@@ -68,7 +74,6 @@ struct VKey {
 
 static std::vector<VKey> g_vkeys;
 
-// 長押しリピート管理
 static SDL_FingerID g_holding_finger = -1;
 static char g_holding_key = 0;
 static Uint32 g_hold_start_time = 0;
@@ -99,32 +104,26 @@ static void start_logger_thread() {
     }).detach();
 }
 
-// 55% / 10% / 35% の画面分割レイアウト計算
+// 1:1 正方形 + 中間共用枠 + 下部キーパッドの配置計算
 static void setup_layout(int win_w, int win_h) {
-    // 1. 上部 55%: メインゲーム画面
+    // 1. 上部：完全な 1:1 正方形（1080 x 1080）
     g_rect_game.x = 0;
     g_rect_game.y = 0;
     g_rect_game.w = win_w;
-    g_rect_game.h = static_cast<int>(win_h * 0.55);
+    g_rect_game.h = win_w;
 
-    // 80文字×22行程度がすっぽり収まるセルサイズ
-    g_cell_w = win_w / 80;
-    if (g_cell_w < 12) g_cell_w = 12;
-    g_cell_h = g_rect_game.h / 24;
-
-    // 2. 中間 10%: メッセージ＆メニュー共用エリア
+    // 2. 中間：メッセージログ／メニュー共用エリア
     g_rect_msg.x = 8;
-    g_rect_msg.y = g_rect_game.h + 4;
+    g_rect_msg.y = g_rect_game.y + g_rect_game.h + 6;
     g_rect_msg.w = win_w - 16;
-    g_rect_msg.h = static_cast<int>(win_h * 0.10) - 8;
+    g_rect_msg.h = 230; // 複数行のメニュー項目や案内文がしっかり読める高さ
 
-    // 3. 下部 35%: バーチャルキーパッド
-    g_rect_pad.x = 10;
+    // 3. 下部：バーチャルキーパッドエリア
+    g_rect_pad.x = 8;
     g_rect_pad.y = g_rect_msg.y + g_rect_msg.h + 8;
-    g_rect_pad.w = win_w - 20;
+    g_rect_pad.w = win_w - 16;
     g_rect_pad.h = win_h - g_rect_pad.y - 10;
 
-    // キーパッドボタン配置
     g_vkeys.clear();
     int dpad_w = static_cast<int>(g_rect_pad.w * 0.60);
     int btn_w = dpad_w / 3 - 6;
@@ -154,9 +153,8 @@ static void setup_layout(int win_w, int win_h) {
         }
     }
 
-    // 右側：機能キー（ESC, RUN, SPACE, ENTER, KB）
-    int func_x = g_rect_pad.x + dpad_w + 10;
-    int func_w = g_rect_pad.w - dpad_w - 10;
+    int func_x = g_rect_pad.x + dpad_w + 8;
+    int func_w = g_rect_pad.w - dpad_w - 8;
     int f_btn_h = g_rect_pad.h / 5 - 6;
 
     struct FuncDef {
@@ -185,42 +183,29 @@ static void setup_layout(int win_w, int win_h) {
     }
 }
 
-// メッセージログ＆メニューエリアの描画
-static void draw_message_area() {
+// 中間領域の描画（メニュー展開時はメニュー優先、非メニュー時はメッセージログ）
+static void draw_middle_area() {
     if (!g_renderer || !g_font_msg) return;
 
-    // エリア背景（スレートダーク）
-    SDL_SetRenderDrawColor(g_renderer, 24, 28, 36, 255);
+    SDL_SetRenderDrawColor(g_renderer, 18, 22, 30, 255);
     SDL_RenderFillRect(g_renderer, &g_rect_msg);
 
-    // 枠線（水色アクセント）
-    SDL_SetRenderDrawColor(g_renderer, 70, 90, 120, 255);
+    // 状態に応じた枠線色（メニュー時は黄色、通常ログ時は青色）
+    if (g_menu_active && !g_menu_lines.empty()) {
+        SDL_SetRenderDrawColor(g_renderer, 200, 160, 40, 255);
+    } else {
+        SDL_SetRenderDrawColor(g_renderer, 65, 95, 140, 255);
+    }
     SDL_RenderDrawRect(g_renderer, &g_rect_msg);
 
     std::lock_guard<std::mutex> lock(g_msg_mutex);
+    int line_y = g_rect_msg.y + 8;
 
-    if (g_in_menu_mode && !g_current_menu_text.empty()) {
-        // 【メニュー表示モード】
-        SDL_Color col = { 255, 230, 140, 255 }; // メニューは黄色
-        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_current_menu_text.c_str(), col);
-        if (surf) {
-            SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-            if (tex) {
-                SDL_Rect dst = { g_rect_msg.x + 10, g_rect_msg.y + 6, surf->w, surf->h };
-                SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-                SDL_DestroyTexture(tex);
-            }
-            SDL_FreeSurface(surf);
-        }
-    } else {
-        // 【通常メッセージログ表示モード（最新2行）】
-        int line_y = g_rect_msg.y + 6;
-        size_t count = g_message_history.size();
-        size_t start = count > 2 ? count - 2 : 0;
-
-        for (size_t i = start; i < count; ++i) {
-            SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 170, 175, 185, 255 };
-            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_message_history[i].c_str(), col);
+    if (g_menu_active && !g_menu_lines.empty()) {
+        // ★ メニュー表示モード：メッセージログを消してメニュー内容を描画 ★
+        for (const auto &m_line : g_menu_lines) {
+            SDL_Color col = { 255, 230, 110, 255 }; // メニューは視認性の高い黄色
+            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, m_line.c_str(), col);
             if (surf) {
                 SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
                 if (tex) {
@@ -230,40 +215,59 @@ static void draw_message_area() {
                 }
                 SDL_FreeSurface(surf);
             }
-            line_y += 24;
+            line_y += 32;
+            if (line_y + 30 > g_rect_msg.y + g_rect_msg.h) break;
+        }
+    } else {
+        // ★ 通常モード：直近のメッセージログを蓄積表示 ★
+        if (!g_message_history.empty()) {
+            size_t count = g_message_history.size();
+            size_t max_lines = 5;
+            size_t start = count > max_lines ? count - max_lines : 0;
+
+            for (size_t i = start; i < count; ++i) {
+                SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 150, 160, 175, 255 };
+                SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_message_history[i].c_str(), col);
+                if (surf) {
+                    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+                    if (tex) {
+                        SDL_Rect dst = { g_rect_msg.x + 10, line_y, surf->w, surf->h };
+                        SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                        SDL_DestroyTexture(tex);
+                    }
+                    SDL_FreeSurface(surf);
+                }
+                line_y += 32;
+            }
         }
     }
 }
 
-// キーパッドの描画
 static void draw_virtual_keypad() {
-    if (!g_renderer || g_vkeys.empty()) return;
-    TTF_Font *use_font = g_font_btn ? g_font_btn : g_font_game;
+    if (!g_renderer || !g_font_btn || g_vkeys.empty()) return;
 
     for (const auto &btn : g_vkeys) {
-        SDL_SetRenderDrawColor(g_renderer, 42, 48, 60, 255);
+        SDL_SetRenderDrawColor(g_renderer, 38, 44, 56, 255);
         SDL_RenderFillRect(g_renderer, &btn.rect);
 
-        SDL_SetRenderDrawColor(g_renderer, 90, 110, 140, 255);
+        SDL_SetRenderDrawColor(g_renderer, 85, 105, 135, 255);
         SDL_RenderDrawRect(g_renderer, &btn.rect);
 
-        if (use_font) {
-            SDL_Color text_col = { 235, 240, 250, 255 };
-            SDL_Surface *surf = TTF_RenderUTF8_Blended(use_font, btn.label, text_col);
-            if (surf) {
-                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-                if (tex) {
-                    SDL_Rect dst = {
-                        btn.rect.x + (btn.rect.w - surf->w) / 2,
-                        btn.rect.y + (btn.rect.h - surf->h) / 2,
-                        surf->w,
-                        surf->h
-                    };
-                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-                    SDL_DestroyTexture(tex);
-                }
-                SDL_FreeSurface(surf);
+        SDL_Color text_col = { 240, 245, 255, 255 };
+        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_btn, btn.label, text_col);
+        if (surf) {
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+            if (tex) {
+                SDL_Rect dst = {
+                    btn.rect.x + (btn.rect.w - surf->w) / 2,
+                    btn.rect.y + (btn.rect.h - surf->h) / 2,
+                    surf->w,
+                    surf->h
+                };
+                SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                SDL_DestroyTexture(tex);
             }
+            SDL_FreeSurface(surf);
         }
     }
 }
@@ -325,7 +329,6 @@ static void process_sdl_events() {
                     g_last_repeat_time = g_hold_start_time;
                 }
             } else {
-                // ゲーム画面またはメッセージエリアのタップは決定・進む
                 if (py < g_rect_pad.y) {
                     send_key(' ');
                 }
@@ -414,16 +417,31 @@ static errr Term_user_android(int n) {
 static errr Term_xtra_android(int n, int v) {
     switch (n) {
     case TERM_XTRA_CLEAR:
-        if (g_renderer) {
+        if (g_renderer && g_term_target) {
+            SDL_SetRenderTarget(g_renderer, g_term_target);
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
             SDL_RenderClear(g_renderer);
+            SDL_SetRenderTarget(g_renderer, nullptr);
+
+            std::lock_guard<std::mutex> lock(g_msg_mutex);
+            g_menu_lines.clear();
+            g_menu_active = false;
         }
         return 0;
 
     case TERM_XTRA_FRESH:
-        if (g_renderer) {
-            draw_message_area();
+        if (g_renderer && g_term_target) {
+            SDL_SetRenderTarget(g_renderer, nullptr);
+            SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
+            SDL_RenderClear(g_renderer);
+
+            // 1:1 正方形エリアへ転送
+            SDL_Rect src_rect = { 0, 0, 1080, 1080 };
+            SDL_RenderCopy(g_renderer, g_term_target, &src_rect, &g_rect_game);
+
+            draw_middle_area();
             draw_virtual_keypad();
+
             SDL_RenderPresent(g_renderer);
         }
         return 0;
@@ -458,37 +476,52 @@ static errr Term_bigcurs_android(int x, int y) {
 }
 
 static errr Term_wipe_android(int x, int y, int n) {
-    if (!g_renderer) return 0;
-    SDL_Rect r = {
-        g_rect_game.x + x * g_cell_w,
-        g_rect_game.y + y * g_cell_h,
-        n * g_cell_w,
-        g_cell_h
-    };
+    if (!g_renderer || !g_term_target) return 0;
+    SDL_SetRenderTarget(g_renderer, g_term_target);
+    SDL_Rect r = { x * V_CELL_W, y * V_CELL_H, n * V_CELL_W, V_CELL_H };
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderFillRect(g_renderer, &r);
+    SDL_SetRenderTarget(g_renderer, nullptr);
     return 0;
 }
 
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
-    if (!g_renderer || !g_font_game || !s) return 0;
+    if (!g_renderer || !g_font_game || !g_term_target || !s) return 0;
 
     std::string text(s, n);
 
-    // 0行目（最上段）に来るメッセージを変愚蛮怒からフックして中間ログエリアに蓄積
-    if (y == 0 && text.find_first_not_of(" ") != std::string::npos) {
+    // ★ メッセージログとメニュー表示の自動判定＆フック ★
+    if (text.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
-        // 重複登録を避けて直近履歴に追加
-        if (g_message_history.empty() || g_message_history.back() != text) {
-            g_message_history.push_back(text);
-            if (g_message_history.size() > 50) {
-                g_message_history.pop_front();
+
+        // 1. メニュー・選択モードの判定（「どの」「ESC」「コマンド:」「アイテム」などのキーワードや末尾行）
+        bool is_menu_signal = (text.find("どの") != std::string::npos ||
+                               text.find("ESC") != std::string::npos ||
+                               text.find("コマンド") != std::string::npos ||
+                               text.find("選択") != std::string::npos ||
+                               (y >= 22));
+
+        if (is_menu_signal) {
+            g_menu_active = true;
+            g_menu_lines.push_back(text);
+            if (g_menu_lines.size() > 6) {
+                g_menu_lines.erase(g_menu_lines.begin());
             }
+        } else if (y == 0) {
+            // 2. 通常メッセージ（0行目）
+            if (g_message_history.empty() || g_message_history.back() != text) {
+                g_message_history.push_back(text);
+                if (g_message_history.size() > 30) {
+                    g_message_history.pop_front();
+                }
+            }
+            // 通常メッセージが出たときはメニュー状態を解除してログ表示に戻す
+            g_menu_active = false;
+            g_menu_lines.clear();
         }
     }
 
-    // ゲーム画面上部の文字描画
     Term_wipe_android(x, y, n);
 
     SDL_Color fg = { 255, 255, 255, 255 };
@@ -497,13 +530,10 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
 
     SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
     if (tex) {
-        SDL_Rect dst = {
-            g_rect_game.x + x * g_cell_w,
-            g_rect_game.y + y * g_cell_h,
-            surf->w,
-            surf->h
-        };
+        SDL_SetRenderTarget(g_renderer, g_term_target);
+        SDL_Rect dst = { x * V_CELL_W, y * V_CELL_H, surf->w, surf->h };
         SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+        SDL_SetRenderTarget(g_renderer, nullptr);
         SDL_DestroyTexture(tex);
     }
     SDL_FreeSurface(surf);
@@ -540,6 +570,12 @@ extern "C" errr init_android(int argc, char **argv) {
         return -1;
     }
 
+    // 内部仮想テクスチャ (1760 x 1080)
+    g_term_target = SDL_CreateTexture(g_renderer,
+                                      SDL_PIXELFORMAT_RGBA8888,
+                                      SDL_TEXTUREACCESS_TARGET,
+                                      V_TERM_W, V_TERM_H);
+
     int win_w = 1080, win_h = 2058;
     SDL_GetWindowSize(g_window, &win_w, &win_h);
     setup_layout(win_w, win_h);
@@ -554,26 +590,24 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
-    // ゲーム画面用フォント（セルの高さに合わせたサイズ）
-    int game_pt = static_cast<int>(g_cell_h * 0.76);
+    // ゲーム画面フォント（セル高45pxに合わせた特大34pt）
     for (const auto &path : font_candidates) {
-        g_font_game = TTF_OpenFont(path.c_str(), game_pt);
+        g_font_game = TTF_OpenFont(path.c_str(), 34);
         if (g_font_game) break;
     }
 
-    // メッセージログ用フォント（少し大きめで読みやすく）
+    // 中間エリア用フォント（22pt）
     for (const auto &path : font_candidates) {
-        g_font_msg = TTF_OpenFont(path.c_str(), 18);
+        g_font_msg = TTF_OpenFont(path.c_str(), 22);
         if (g_font_msg) break;
     }
 
-    // ボタン用フォント
+    // キーパッド用フォント（32pt）
     for (const auto &path : font_candidates) {
-        g_font_btn = TTF_OpenFont(path.c_str(), 22);
+        g_font_btn = TTF_OpenFont(path.c_str(), 32);
         if (g_font_btn) break;
     }
 
-    // 変愚蛮怒の端末初期化 (80x24)
     term_type *t = &g_term;
     term_init(t, 80, 24, 256);
 
@@ -589,7 +623,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Term activated with 3-pane layout.");
+    LOGI("init_android succeeded! Full 3-pane layout active.");
     return 0;
 }
 
@@ -597,7 +631,6 @@ extern "C" int SDL_main(int argc, char *argv[]) {
     start_logger_thread();
     LOGI("=== Hengband Mobile Starting ===");
 
-    // 日本語環境変数の適用
     setenv("LANG", "ja_JP.UTF-8", 1);
     setenv("LC_ALL", "ja_JP.UTF-8", 1);
     setenv("LC_CTYPE", "ja_JP.UTF-8", 1);
