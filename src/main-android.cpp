@@ -39,12 +39,11 @@ static TTF_Font *g_font_btn = nullptr;
 static SDL_Texture *g_term_target = nullptr;
 
 // 画面分割レイアウト座標
-static SDL_Rect g_rect_game; // 上部 ゲーム画面（80文字完全収容枠）
-static SDL_Rect g_rect_msg;  // 中間 メッセージログ／メニュー共用エリア
+static SDL_Rect g_rect_game; // 上部 ゲーム画面
+static SDL_Rect g_rect_msg;  // 中間 メッセージログ枠
 static SDL_Rect g_rect_pad;  // 下部 操作キーパッド
 
-// ★ 80文字 x 24行 を高精細に描画する内部仮想解像度 ★
-// 内部テクスチャを高解像度（1600 x 960）で生成し、画面幅（1080 x 648）へ端切れなく転送
+// 80文字 x 24行 のセルサイズ定義
 static const int V_CELL_W = 20;
 static const int V_CELL_H = 40;
 static const int V_TERM_W = V_CELL_W * 80; // 1600
@@ -61,39 +60,18 @@ static inline void send_key(int ch) {
     term_key_push(ch);
 }
 
-// 末尾で途切れた UTF-8 マルチバイト文字（豆腐 ☒ の原因）を安全にトリムする
-static std::string sanitize_utf8(const char *src, size_t len) {
-    if (!src || len == 0) return "";
+// UTF-8 の 1 文字分のバイト数を判定
+static size_t get_utf8_char_len(unsigned char c) {
+    if (c <= 0x7F) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
 
-    size_t valid_len = 0;
-    for (size_t i = 0; i < len; ) {
-        unsigned char c = static_cast<unsigned char>(src[i]);
-        size_t char_len = 1;
-
-        if (c <= 0x7F) {
-            char_len = 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            char_len = 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            char_len = 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            char_len = 4;
-        } else {
-            // 不正な先頭バイトはスキップ
-            i++;
-            continue;
-        }
-
-        if (i + char_len <= len) {
-            i += char_len;
-            valid_len = i;
-        } else {
-            // 末尾の文字のバイト数が足りないため除外（豆腐化を防止）
-            break;
-        }
-    }
-
-    return std::string(src, valid_len);
+// 全角文字（2セル幅）か半角文字（1セル幅）かを判定
+static int get_char_cell_width(unsigned char c) {
+    return (c <= 0x7F) ? 1 : 2;
 }
 
 // --- バーチャルキーパッド定義 ---
@@ -106,7 +84,6 @@ struct VKey {
 };
 
 static std::vector<VKey> g_vkeys;
-
 static SDL_FingerID g_holding_finger = -1;
 static char g_holding_key = 0;
 static Uint32 g_hold_start_time = 0;
@@ -215,6 +192,7 @@ static void setup_layout(int win_w, int win_h) {
     }
 }
 
+// メッセージログ枠の描画（幅による自動折り返し対応）
 static void draw_middle_area() {
     if (!g_renderer || !g_font_msg) return;
 
@@ -230,44 +208,59 @@ static void draw_middle_area() {
 
     std::lock_guard<std::mutex> lock(g_msg_mutex);
     int line_y = g_rect_msg.y + 8;
+    int max_draw_w = g_rect_msg.w - 20;
 
+    std::vector<std::string> lines_to_draw;
     if (g_menu_active && !g_menu_lines.empty()) {
-        for (const auto &m_line : g_menu_lines) {
-            SDL_Color col = { 255, 230, 110, 255 };
-            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, m_line.c_str(), col);
-            if (surf) {
-                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-                if (tex) {
-                    SDL_Rect dst = { g_rect_msg.x + 10, line_y, surf->w, surf->h };
-                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-                    SDL_DestroyTexture(tex);
-                }
-                SDL_FreeSurface(surf);
-            }
-            line_y += 32;
-            if (line_y + 30 > g_rect_msg.y + g_rect_msg.h) break;
-        }
+        lines_to_draw = g_menu_lines;
     } else {
-        if (!g_message_history.empty()) {
-            size_t count = g_message_history.size();
-            size_t max_lines = 6;
-            size_t start = count > max_lines ? count - max_lines : 0;
-
-            for (size_t i = start; i < count; ++i) {
-                SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 150, 160, 175, 255 };
-                SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, g_message_history[i].c_str(), col);
-                if (surf) {
-                    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-                    if (tex) {
-                        SDL_Rect dst = { g_rect_msg.x + 10, line_y, surf->w, surf->h };
-                        SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-                        SDL_DestroyTexture(tex);
-                    }
-                    SDL_FreeSurface(surf);
-                }
-                line_y += 32;
-            }
+        for (const auto &msg : g_message_history) {
+            lines_to_draw.push_back(msg);
         }
+    }
+
+    // 枠の下部から最新行を優先して描画
+    std::vector<std::string> wrapped_lines;
+    for (const auto &raw : lines_to_draw) {
+        std::string cur = "";
+        for (size_t i = 0; i < raw.size(); ) {
+            size_t c_len = get_utf8_char_len(static_cast<unsigned char>(raw[i]));
+            if (i + c_len > raw.size()) break;
+            std::string ch = raw.substr(i, c_len);
+            
+            int text_w = 0, text_h = 0;
+            TTF_SizeUTF8(g_font_msg, (cur + ch).c_str(), &text_w, &text_h);
+            if (text_w > max_draw_w) {
+                wrapped_lines.push_back(cur);
+                cur = ch;
+            } else {
+                cur += ch;
+            }
+            i += c_len;
+        }
+        if (!cur.empty()) wrapped_lines.push_back(cur);
+    }
+
+    size_t count = wrapped_lines.size();
+    size_t max_lines = 7;
+    size_t start = count > max_lines ? count - max_lines : 0;
+
+    for (size_t i = start; i < count; ++i) {
+        SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 150, 160, 175, 255 };
+        if (g_menu_active) col = SDL_Color{ 255, 230, 110, 255 };
+
+        SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, wrapped_lines[i].c_str(), col);
+        if (surf) {
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+            if (tex) {
+                SDL_Rect dst = { g_rect_msg.x + 10, line_y, surf->w, surf->h };
+                SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                SDL_DestroyTexture(tex);
+            }
+            SDL_FreeSurface(surf);
+        }
+        line_y += 32;
+        if (line_y + 30 > g_rect_msg.y + g_rect_msg.h) break;
     }
 }
 
@@ -465,7 +458,7 @@ static errr Term_xtra_android(int n, int v) {
             SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
             SDL_RenderClear(g_renderer);
 
-            // 80列 x 24行 全体を 1ドットも欠けずに画面上部（1080 x 648）へ完全フィット描画
+            // 80列 x 24行 を画面幅（1080 x 648）へ完全フィット描画
             SDL_RenderCopy(g_renderer, g_term_target, nullptr, &g_rect_game);
 
             draw_middle_area();
@@ -504,11 +497,11 @@ static errr Term_bigcurs_android(int x, int y) {
     return 0;
 }
 
+// セル単位の完全クリア（足跡・ゴミの一掃）
 static errr Term_wipe_android(int x, int y, int n) {
     if (!g_renderer || !g_term_target) return 0;
     SDL_SetRenderTarget(g_renderer, g_term_target);
     
-    // ★ 移動時の足跡（残像のゴミ）を完全にピクセル上書き消去
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_Rect r = { x * V_CELL_W, y * V_CELL_H, n * V_CELL_W, V_CELL_H };
@@ -518,14 +511,14 @@ static errr Term_wipe_android(int x, int y, int n) {
     return 0;
 }
 
+// ★ グリッド完全同期テキスト描画 ★
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
-    if (!g_renderer || !g_font_game || !g_term_target || !s) return 0;
+    if (!g_renderer || !g_font_game || !g_term_target || !s || n <= 0) return 0;
 
-    // ★ 分断された UTF-8 の末尾バイトを安全にカット（豆腐 ☒ の防止）
-    std::string text = sanitize_utf8(s, n);
-    if (text.empty()) return 0;
+    std::string text(s, n);
 
+    // メッセージやメニューのフック
     if (text.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
 
@@ -553,23 +546,48 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
         }
     }
 
-    // 文字を描く前に必ずセルを完全クリア
+    // 描画先領域を確実に黒塗りつぶし（足跡・ゴミの消去）
     Term_wipe_android(x, y, n);
 
+    SDL_SetRenderTarget(g_renderer, g_term_target);
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
     SDL_Color fg = { 255, 255, 255, 255 };
-    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, text.c_str(), fg);
-    if (!surf) return 0;
 
-    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-    if (tex) {
-        SDL_SetRenderTarget(g_renderer, g_term_target);
-        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-        SDL_Rect dst = { x * V_CELL_W, y * V_CELL_H, surf->w, surf->h };
-        SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-        SDL_SetRenderTarget(g_renderer, nullptr);
-        SDL_DestroyTexture(tex);
+    // 1文字（コードポイント）ずつグリッド座標に精密配置
+    int cur_x = x;
+    for (size_t i = 0; i < text.size(); ) {
+        size_t c_len = get_utf8_char_len(static_cast<unsigned char>(text[i]));
+        if (i + c_len > text.size()) break; // 末尾の壊れたバイトは破棄
+
+        std::string single_char = text.substr(i, c_len);
+        int cell_w = get_char_cell_width(static_cast<unsigned char>(text[i]));
+
+        if (single_char != " ") {
+            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, single_char.c_str(), fg);
+            if (surf) {
+                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+                if (tex) {
+                    // セルの中央にセンタリングして描画
+                    int target_w = cell_w * V_CELL_W;
+                    int draw_w = surf->w > target_w ? target_w : surf->w;
+                    SDL_Rect dst = {
+                        cur_x * V_CELL_W + (target_w - draw_w) / 2,
+                        y * V_CELL_H,
+                        draw_w,
+                        V_CELL_H
+                    };
+                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                    SDL_DestroyTexture(tex);
+                }
+                SDL_FreeSurface(surf);
+            }
+        }
+
+        cur_x += cell_w;
+        i += c_len;
     }
-    SDL_FreeSurface(surf);
+
+    SDL_SetRenderTarget(g_renderer, nullptr);
     return 0;
 }
 
@@ -622,13 +640,14 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
+    // セル高さ40pxに収まる 28pt
     for (const auto &path : font_candidates) {
-        g_font_game = TTF_OpenFont(path.c_str(), 30);
+        g_font_game = TTF_OpenFont(path.c_str(), 28);
         if (g_font_game) break;
     }
 
     for (const auto &path : font_candidates) {
-        g_font_msg = TTF_OpenFont(path.c_str(), 22);
+        g_font_msg = TTF_OpenFont(path.c_str(), 20);
         if (g_font_msg) break;
     }
 
@@ -652,7 +671,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Full-fit aspect layout active.");
+    LOGI("init_android succeeded! Cell-aligned grid rendering active.");
     return 0;
 }
 
