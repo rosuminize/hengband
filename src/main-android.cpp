@@ -14,11 +14,12 @@
 #include <thread>
 #include <mutex>
 
-// 変愚蛮怒の端末・基本型ヘッダー
+// 変愚蛮怒の端末・文字コードヘッダー
 #include "term/gameterm.h"
 #include "term/z-term.h"
 #include "term/term-color-types.h"
 #include "system/angband.h"
+#include "locale/character-encoding.h"
 
 #ifdef main
 #undef main
@@ -50,28 +51,96 @@ static const int V_TERM_W = V_CELL_W * 80; // 1600
 static const int V_TERM_H = V_CELL_H * 24; // 960
 static term_type g_term;
 
-// メッセージログ＆メニュー共用バッファ
+// メッセージログバッファ
 static std::deque<std::string> g_message_history;
-static std::vector<std::string> g_menu_lines;
-static bool g_menu_active = false;
 static std::mutex g_msg_mutex;
 
 static inline void send_key(int ch) {
     term_key_push(ch);
 }
 
-// UTF-8 の 1 文字分のバイト数を判定
-static size_t get_utf8_char_len(unsigned char c) {
-    if (c <= 0x7F) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;
-}
+// EUC-JP か UTF-8 かを自動判別し、nセル分（全角=2セル、半角=1セル）の文字を完全抽出する
+static std::string extract_n_cells_utf8(const char *s, int n) {
+    if (!s || n <= 0) return "";
 
-// 全角文字（2セル幅）か半角文字（1セル幅）かを判定
-static int get_char_cell_width(unsigned char c) {
-    return (c <= 0x7F) ? 1 : 2;
+    std::string out;
+    int cell_count = 0;
+    size_t i = 0;
+
+    while (cell_count < n && s[i] != '\0') {
+        unsigned char c1 = static_cast<unsigned char>(s[i]);
+
+        // 1. ASCII (半角: 1バイト, 1セル)
+        if (c1 <= 0x7F) {
+            out += static_cast<char>(c1);
+            i += 1;
+            cell_count += 1;
+            continue;
+        }
+
+        unsigned char c2 = static_cast<unsigned char>(s[i + 1]);
+        if (c2 == '\0') break;
+
+        // 2. UTF-8 (3バイト日本語: 全角, 2セル)
+        if ((c1 & 0xF0) == 0xE0 && (c2 & 0xC0) == 0x80) {
+            unsigned char c3 = static_cast<unsigned char>(s[i + 2]);
+            if (c3 == '\0') break;
+
+            if (cell_count + 2 <= n) {
+                out.append(s + i, 3);
+                cell_count += 2;
+            }
+            i += 3;
+            continue;
+        }
+
+        // 3. UTF-8 (2バイト記号: 1セル)
+        if ((c1 & 0xE0) == 0xC0 && (c2 & 0xC0) == 0x80) {
+            if (cell_count + 1 <= n) {
+                out.append(s + i, 2);
+                cell_count += 1;
+            }
+            i += 2;
+            continue;
+        }
+
+        // 4. EUC-JP (2バイト日本語: モンスター名や履歴など, 全角, 2セル)
+        if (c1 >= 0xA1 && c1 <= 0xFE && c2 >= 0xA1 && c2 <= 0xFE) {
+            if (cell_count + 2 <= n) {
+                std::string euc_pair(s + i, 2);
+                auto converted = sys_to_utf8(euc_pair);
+                if (converted && !converted->empty()) {
+                    out += *converted;
+                } else {
+                    out += "  ";
+                }
+                cell_count += 2;
+            }
+            i += 2;
+            continue;
+        }
+
+        // 5. EUC-JP 半角カナ (0x8E, 1セル)
+        if (c1 == 0x8E && c2 >= 0xA1 && c2 <= 0xDF) {
+            if (cell_count + 1 <= n) {
+                std::string euc_pair(s + i, 2);
+                auto converted = sys_to_utf8(euc_pair);
+                if (converted && !converted->empty()) {
+                    out += *converted;
+                } else {
+                    out += " ";
+                }
+                cell_count += 1;
+            }
+            i += 2;
+            continue;
+        }
+
+        // 不明なバイトは1バイト進める
+        i += 1;
+    }
+
+    return out;
 }
 
 // --- バーチャルキーパッド定義 ---
@@ -121,7 +190,7 @@ static void setup_layout(int win_w, int win_h) {
     g_rect_game.w = win_w;
     g_rect_game.h = static_cast<int>(win_w * 960.0f / 1600.0f); // 648px
 
-    // 2. 中間：メッセージログ＆メニュー枠（260px）
+    // 2. 中間：メッセージログ枠（260px）
     g_rect_msg.x = 8;
     g_rect_msg.y = g_rect_game.y + g_rect_game.h + 8;
     g_rect_msg.w = win_w - 16;
@@ -192,42 +261,32 @@ static void setup_layout(int win_w, int win_h) {
     }
 }
 
-// メッセージログ枠の描画（幅による自動折り返し対応）
 static void draw_middle_area() {
     if (!g_renderer || !g_font_msg) return;
 
     SDL_SetRenderDrawColor(g_renderer, 18, 22, 30, 255);
     SDL_RenderFillRect(g_renderer, &g_rect_msg);
 
-    if (g_menu_active && !g_menu_lines.empty()) {
-        SDL_SetRenderDrawColor(g_renderer, 200, 160, 40, 255);
-    } else {
-        SDL_SetRenderDrawColor(g_renderer, 65, 95, 140, 255);
-    }
+    SDL_SetRenderDrawColor(g_renderer, 65, 95, 140, 255);
     SDL_RenderDrawRect(g_renderer, &g_rect_msg);
 
     std::lock_guard<std::mutex> lock(g_msg_mutex);
     int line_y = g_rect_msg.y + 8;
     int max_draw_w = g_rect_msg.w - 20;
 
-    std::vector<std::string> lines_to_draw;
-    if (g_menu_active && !g_menu_lines.empty()) {
-        lines_to_draw = g_menu_lines;
-    } else {
-        for (const auto &msg : g_message_history) {
-            lines_to_draw.push_back(msg);
-        }
-    }
-
-    // 枠の下部から最新行を優先して描画
     std::vector<std::string> wrapped_lines;
-    for (const auto &raw : lines_to_draw) {
+    for (const auto &raw : g_message_history) {
         std::string cur = "";
         for (size_t i = 0; i < raw.size(); ) {
-            size_t c_len = get_utf8_char_len(static_cast<unsigned char>(raw[i]));
+            unsigned char c = static_cast<unsigned char>(raw[i]);
+            size_t c_len = 1;
+            if ((c & 0xE0) == 0xC0) c_len = 2;
+            else if ((c & 0xF0) == 0xE0) c_len = 3;
+            else if ((c & 0xF8) == 0xF0) c_len = 4;
+
             if (i + c_len > raw.size()) break;
             std::string ch = raw.substr(i, c_len);
-            
+
             int text_w = 0, text_h = 0;
             TTF_SizeUTF8(g_font_msg, (cur + ch).c_str(), &text_w, &text_h);
             if (text_w > max_draw_w) {
@@ -247,8 +306,6 @@ static void draw_middle_area() {
 
     for (size_t i = start; i < count; ++i) {
         SDL_Color col = (i == count - 1) ? SDL_Color{ 255, 255, 255, 255 } : SDL_Color{ 150, 160, 175, 255 };
-        if (g_menu_active) col = SDL_Color{ 255, 230, 110, 255 };
-
         SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_msg, wrapped_lines[i].c_str(), col);
         if (surf) {
             SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
@@ -444,10 +501,6 @@ static errr Term_xtra_android(int n, int v) {
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
             SDL_RenderClear(g_renderer);
             SDL_SetRenderTarget(g_renderer, nullptr);
-
-            std::lock_guard<std::mutex> lock(g_msg_mutex);
-            g_menu_lines.clear();
-            g_menu_active = false;
         }
         return 0;
 
@@ -458,7 +511,7 @@ static errr Term_xtra_android(int n, int v) {
             SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
             SDL_RenderClear(g_renderer);
 
-            // 80列 x 24行 を画面幅（1080 x 648）へ完全フィット描画
+            // 80列 x 24行 を画面上部（1080 x 648）へ完全フィット描画
             SDL_RenderCopy(g_renderer, g_term_target, nullptr, &g_rect_game);
 
             draw_middle_area();
@@ -497,7 +550,7 @@ static errr Term_bigcurs_android(int x, int y) {
     return 0;
 }
 
-// セル単位の完全クリア（足跡・ゴミの一掃）
+// セル単位の完全クリア（足跡・ゴミの消去）
 static errr Term_wipe_android(int x, int y, int n) {
     if (!g_renderer || !g_term_target) return 0;
     SDL_SetRenderTarget(g_renderer, g_term_target);
@@ -511,83 +564,48 @@ static errr Term_wipe_android(int x, int y, int n) {
     return 0;
 }
 
-// ★ グリッド完全同期テキスト描画 ★
+// ★ セル完全同期・文字コード統合テキスト描画 ★
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     (void)a;
     if (!g_renderer || !g_font_game || !g_term_target || !s || n <= 0) return 0;
 
-    std::string text(s, n);
+    // n セル分の文字を過不足なく抽出（末尾の破損や豆腐化を物理的に阻止）
+    std::string text = extract_n_cells_utf8(s, n);
+    if (text.empty()) return 0;
 
-    // メッセージやメニューのフック
-    if (text.find_first_not_of(" ") != std::string::npos) {
+    // ゲームメッセージ（y == 0）のみをクリーンに蓄積
+    if (y == 0 && text.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
-
-        bool is_menu_signal = (text.find("どの") != std::string::npos ||
-                               text.find("ESC") != std::string::npos ||
-                               text.find("コマンド") != std::string::npos ||
-                               text.find("選択") != std::string::npos ||
-                               (y >= 22));
-
-        if (is_menu_signal) {
-            g_menu_active = true;
-            g_menu_lines.push_back(text);
-            if (g_menu_lines.size() > 6) {
-                g_menu_lines.erase(g_menu_lines.begin());
+        if (g_message_history.empty() || g_message_history.back() != text) {
+            g_message_history.push_back(text);
+            if (g_message_history.size() > 50) {
+                g_message_history.pop_front();
             }
-        } else if (y == 0) {
-            if (g_message_history.empty() || g_message_history.back() != text) {
-                g_message_history.push_back(text);
-                if (g_message_history.size() > 30) {
-                    g_message_history.pop_front();
-                }
-            }
-            g_menu_active = false;
-            g_menu_lines.clear();
         }
     }
 
-    // 描画先領域を確実に黒塗りつぶし（足跡・ゴミの消去）
+    // 描画先領域を黒クリア
     Term_wipe_android(x, y, n);
 
-    SDL_SetRenderTarget(g_renderer, g_term_target);
-    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
     SDL_Color fg = { 255, 255, 255, 255 };
+    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, text.c_str(), fg);
+    if (!surf) return 0;
 
-    // 1文字（コードポイント）ずつグリッド座標に精密配置
-    int cur_x = x;
-    for (size_t i = 0; i < text.size(); ) {
-        size_t c_len = get_utf8_char_len(static_cast<unsigned char>(text[i]));
-        if (i + c_len > text.size()) break; // 末尾の壊れたバイトは破棄
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+    if (tex) {
+        SDL_SetRenderTarget(g_renderer, g_term_target);
+        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
 
-        std::string single_char = text.substr(i, c_len);
-        int cell_w = get_char_cell_width(static_cast<unsigned char>(text[i]));
+        // 指定セル枠（n * V_CELL_W）内にジャスト描画
+        int target_w = n * V_CELL_W;
+        int draw_w = surf->w > target_w ? target_w : surf->w;
+        SDL_Rect dst = { x * V_CELL_W, y * V_CELL_H, draw_w, V_CELL_H };
+        SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
 
-        if (single_char != " ") {
-            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, single_char.c_str(), fg);
-            if (surf) {
-                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-                if (tex) {
-                    // セルの中央にセンタリングして描画
-                    int target_w = cell_w * V_CELL_W;
-                    int draw_w = surf->w > target_w ? target_w : surf->w;
-                    SDL_Rect dst = {
-                        cur_x * V_CELL_W + (target_w - draw_w) / 2,
-                        y * V_CELL_H,
-                        draw_w,
-                        V_CELL_H
-                    };
-                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-                    SDL_DestroyTexture(tex);
-                }
-                SDL_FreeSurface(surf);
-            }
-        }
-
-        cur_x += cell_w;
-        i += c_len;
+        SDL_SetRenderTarget(g_renderer, nullptr);
+        SDL_DestroyTexture(tex);
     }
-
-    SDL_SetRenderTarget(g_renderer, nullptr);
+    SDL_FreeSurface(surf);
     return 0;
 }
 
@@ -632,7 +650,7 @@ extern "C" errr init_android(int argc, char **argv) {
 
     const char *files_dir_env = getenv("FILES_DIR");
     std::string files_dir = files_dir_env ? files_dir_env : "/data/user/0/org.hengband.mobile/files";
-    
+
     std::vector<std::string> font_candidates = {
         files_dir + "/lib/xtra/font/NotoSansCJKjp-Regular.otf",
         files_dir + "/lib/xtra/font/NotoSansJP-Regular.ttf",
@@ -640,7 +658,6 @@ extern "C" errr init_android(int argc, char **argv) {
         "/system/fonts/Roboto-Regular.ttf"
     };
 
-    // セル高さ40pxに収まる 28pt
     for (const auto &path : font_candidates) {
         g_font_game = TTF_OpenFont(path.c_str(), 28);
         if (g_font_game) break;
@@ -671,7 +688,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Cell-aligned grid rendering active.");
+    LOGI("init_android succeeded! Clean grid rendering active.");
     return 0;
 }
 
