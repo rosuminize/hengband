@@ -59,88 +59,129 @@ static inline void send_key(int ch) {
     term_key_push(ch);
 }
 
-// EUC-JP か UTF-8 かを自動判別し、nセル分（全角=2セル、半角=1セル）の文字を完全抽出する
-static std::string extract_n_cells_utf8(const char *s, int n) {
-    if (!s || n <= 0) return "";
+// 変愚蛮怒の16色カラーパレット
+static SDL_Color get_term_color(byte a) {
+    switch (a & 0x0F) {
+    case TERM_DARK:    return { 0,   0,   0,   255 };
+    case TERM_WHITE:   return { 255, 255, 255, 255 };
+    case TERM_SLATE:   return { 140, 140, 150, 255 };
+    case TERM_ORANGE:  return { 255, 150, 30,  255 };
+    case TERM_RED:     return { 230, 50,  50,  255 };
+    case TERM_GREEN:   return { 40,  200, 70,  255 };
+    case TERM_BLUE:    return { 60,  130, 255, 255 };
+    case TERM_UMBER:   return { 160, 100, 50,  255 };
+    case TERM_L_DARK:  return { 90,  95,  105, 255 };
+    case TERM_L_WHITE: return { 210, 210, 220, 255 };
+    case TERM_VIOLET:  return { 210, 80,  230, 255 };
+    case TERM_YELLOW:  return { 255, 240, 60,  255 };
+    case TERM_L_RED:   return { 255, 110, 110, 255 };
+    case TERM_L_GREEN: return { 110, 255, 130, 255 };
+    case TERM_L_BLUE:  return { 110, 210, 255, 255 };
+    case TERM_L_UMBER: return { 215, 165, 110, 255 };
+    default:           return { 255, 255, 255, 255 };
+    }
+}
 
-    std::string out;
-    int cell_count = 0;
-    size_t i = 0;
+struct CellChar {
+    std::string utf8;
+    int cell_w; // 1 (半角) or 2 (全角)
+};
 
-    while (cell_count < n && s[i] != '\0') {
+// EUC-JP のバイト列 (s, n) を1文字ずつの UTF-8 とセル幅に分解する
+static std::vector<CellChar> parse_euc_cells(const char *s, int n, std::string &out_full_utf8) {
+    std::vector<CellChar> result;
+    out_full_utf8.clear();
+    if (!s || n <= 0) return result;
+
+    // 1. EUC-JP のバイト境界を確定し、各文字のバイト長とセル幅を記録
+    struct Span {
+        size_t offset;
+        size_t bytes;
+        int cell_w;
+        bool is_euc;
+    };
+    std::vector<Span> spans;
+    spans.reserve(n);
+
+    size_t valid_bytes = 0;
+    for (int i = 0; i < n; ) {
         unsigned char c1 = static_cast<unsigned char>(s[i]);
+        if (c1 == '\0') break;
 
-        // 1. ASCII (半角: 1バイト, 1セル)
         if (c1 <= 0x7F) {
-            out += static_cast<char>(c1);
+            // ASCII (1バイト, 1セル)
+            spans.push_back({ static_cast<size_t>(i), 1, 1, false });
             i += 1;
-            cell_count += 1;
-            continue;
-        }
-
-        unsigned char c2 = static_cast<unsigned char>(s[i + 1]);
-        if (c2 == '\0') break;
-
-        // 2. UTF-8 (3バイト日本語: 全角, 2セル)
-        if ((c1 & 0xF0) == 0xE0 && (c2 & 0xC0) == 0x80) {
-            unsigned char c3 = static_cast<unsigned char>(s[i + 2]);
-            if (c3 == '\0') break;
-
-            if (cell_count + 2 <= n) {
-                out.append(s + i, 3);
-                cell_count += 2;
+            valid_bytes = i;
+        } else if (c1 == 0x8E) {
+            // EUC-JP 半角カナ (2バイト, 1セル)
+            if (i + 1 < n && s[i + 1] != '\0') {
+                spans.push_back({ static_cast<size_t>(i), 2, 1, true });
+                i += 2;
+                valid_bytes = i;
+            } else {
+                break;
             }
-            i += 3;
-            continue;
-        }
-
-        // 3. UTF-8 (2バイト記号: 1セル)
-        if ((c1 & 0xE0) == 0xC0 && (c2 & 0xC0) == 0x80) {
-            if (cell_count + 1 <= n) {
-                out.append(s + i, 2);
-                cell_count += 1;
+        } else if (c1 == 0x8F) {
+            // EUC-JP 補助漢字 (3バイト, 2セル)
+            if (i + 2 < n && s[i + 1] != '\0' && s[i + 2] != '\0') {
+                spans.push_back({ static_cast<size_t>(i), 3, 2, true });
+                i += 3;
+                valid_bytes = i;
+            } else {
+                break;
             }
-            i += 2;
-            continue;
-        }
-
-        // 4. EUC-JP (2バイト日本語: モンスター名や履歴など, 全角, 2セル)
-        if (c1 >= 0xA1 && c1 <= 0xFE && c2 >= 0xA1 && c2 <= 0xFE) {
-            if (cell_count + 2 <= n) {
-                std::string euc_pair(s + i, 2);
-                auto converted = sys_to_utf8(euc_pair);
-                if (converted && !converted->empty()) {
-                    out += *converted;
-                } else {
-                    out += "  ";
-                }
-                cell_count += 2;
+        } else if (c1 >= 0xA1 && c1 <= 0xFE) {
+            // EUC-JP 全角漢字・ひらがな・カタカナ・記号 (2バイト, 2セル)
+            if (i + 1 < n && s[i + 1] != '\0') {
+                spans.push_back({ static_cast<size_t>(i), 2, 2, true });
+                i += 2;
+                valid_bytes = i;
+            } else {
+                break;
             }
-            i += 2;
-            continue;
+        } else {
+            // 想定外バイトは半角空白としてスキップ
+            spans.push_back({ static_cast<size_t>(i), 1, 1, false });
+            i += 1;
+            valid_bytes = i;
         }
-
-        // 5. EUC-JP 半角カナ (0x8E, 1セル)
-        if (c1 == 0x8E && c2 >= 0xA1 && c2 <= 0xDF) {
-            if (cell_count + 1 <= n) {
-                std::string euc_pair(s + i, 2);
-                auto converted = sys_to_utf8(euc_pair);
-                if (converted && !converted->empty()) {
-                    out += *converted;
-                } else {
-                    out += " ";
-                }
-                cell_count += 1;
-            }
-            i += 2;
-            continue;
-        }
-
-        // 不明なバイトは1バイト進める
-        i += 1;
     }
 
-    return out;
+    if (spans.empty()) return result;
+
+    // 2. 有効な EUC-JP バイト列全体を 1回の JNI 呼び出しで UTF-8 に一括変換
+    auto converted_opt = sys_to_utf8(std::string_view(s, valid_bytes));
+    if (!converted_opt) {
+        // 万一変換失敗時は ASCII のみ通すフォールバック
+        for (const auto &sp : spans) {
+            std::string ch = (!sp.is_euc && static_cast<unsigned char>(s[sp.offset]) <= 0x7F)
+                                 ? std::string(1, s[sp.offset])
+                                 : std::string(sp.cell_w, ' ');
+            out_full_utf8 += ch;
+            result.push_back({ std::move(ch), sp.cell_w });
+        }
+        return result;
+    }
+
+    out_full_utf8 = *converted_opt;
+
+    // 3. 変換後の UTF-8 文字列をコードポイント単位で切り出し、各セルの span と対応付ける
+    size_t u_pos = 0;
+    for (const auto &sp : spans) {
+        if (u_pos >= out_full_utf8.size()) break;
+        unsigned char uc = static_cast<unsigned char>(out_full_utf8[u_pos]);
+        size_t u_len = 1;
+        if ((uc & 0xE0) == 0xC0) u_len = 2;
+        else if ((uc & 0xF0) == 0xE0) u_len = 3;
+        else if ((uc & 0xF8) == 0xF0) u_len = 4;
+
+        if (u_pos + u_len > out_full_utf8.size()) break;
+        result.push_back({ out_full_utf8.substr(u_pos, u_len), sp.cell_w });
+        u_pos += u_len;
+    }
+
+    return result;
 }
 
 // --- バーチャルキーパッド定義 ---
@@ -552,60 +593,71 @@ static errr Term_bigcurs_android(int x, int y) {
 
 // セル単位の完全クリア（足跡・ゴミの消去）
 static errr Term_wipe_android(int x, int y, int n) {
-    if (!g_renderer || !g_term_target) return 0;
+    if (!g_renderer || !g_term_target || n <= 0) return 0;
     SDL_SetRenderTarget(g_renderer, g_term_target);
-    
+
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_Rect r = { x * V_CELL_W, y * V_CELL_H, n * V_CELL_W, V_CELL_H };
     SDL_RenderFillRect(g_renderer, &r);
-    
+
     SDL_SetRenderTarget(g_renderer, nullptr);
     return 0;
 }
 
-// ★ セル完全同期・文字コード統合テキスト描画 ★
+// ★ EUC-JP完全準拠・1文字ずつ厳密セル配置レンダリング ★
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
-    (void)a;
     if (!g_renderer || !g_font_game || !g_term_target || !s || n <= 0) return 0;
 
-    // n セル分の文字を過不足なく抽出（末尾の破損や豆腐化を物理的に阻止）
-    std::string text = extract_n_cells_utf8(s, n);
-    if (text.empty()) return 0;
+    // 1. EUC-JP バイト列を正確な文字単位・セル幅に分解
+    std::string full_utf8;
+    std::vector<CellChar> cells = parse_euc_cells(s, n, full_utf8);
 
-    // ゲームメッセージ（y == 0）のみをクリーンに蓄積
-    if (y == 0 && text.find_first_not_of(" ") != std::string::npos) {
+    // 2. ゲームメッセージ（y == 0）のみをクリーンに蓄積
+    if (y == 0 && full_utf8.find_first_not_of(" ") != std::string::npos) {
         std::lock_guard<std::mutex> lock(g_msg_mutex);
-        if (g_message_history.empty() || g_message_history.back() != text) {
-            g_message_history.push_back(text);
+        if (g_message_history.empty() || g_message_history.back() != full_utf8) {
+            g_message_history.push_back(full_utf8);
             if (g_message_history.size() > 50) {
                 g_message_history.pop_front();
             }
         }
     }
 
-    // 描画先領域を黒クリア
+    // 3. 描画先セル領域を完全黒クリア
     Term_wipe_android(x, y, n);
 
-    SDL_Color fg = { 255, 255, 255, 255 };
-    SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, text.c_str(), fg);
-    if (!surf) return 0;
+    // 4. 1文字ずつ自分のセル枠（半角=20px, 全角=40px）内に厳密配置して描画
+    SDL_SetRenderTarget(g_renderer, g_term_target);
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    SDL_Color fg = get_term_color(a);
 
-    SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
-    if (tex) {
-        SDL_SetRenderTarget(g_renderer, g_term_target);
-        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-
-        // 指定セル枠（n * V_CELL_W）内にジャスト描画
-        int target_w = n * V_CELL_W;
-        int draw_w = surf->w > target_w ? target_w : surf->w;
-        SDL_Rect dst = { x * V_CELL_W, y * V_CELL_H, draw_w, V_CELL_H };
-        SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
-
-        SDL_SetRenderTarget(g_renderer, nullptr);
-        SDL_DestroyTexture(tex);
+    int cur_x = x;
+    for (const auto &cell : cells) {
+        if (cell.utf8 != " " && cell.utf8 != " ") {
+            SDL_Surface *surf = TTF_RenderUTF8_Blended(g_font_game, cell.utf8.c_str(), fg);
+            if (surf) {
+                SDL_Texture *tex = SDL_CreateTextureFromSurface(g_renderer, surf);
+                if (tex) {
+                    int box_w = cell.cell_w * V_CELL_W;
+                    int draw_w = surf->w > box_w ? box_w : surf->w;
+                    int draw_h = surf->h > V_CELL_H ? V_CELL_H : surf->h;
+                    SDL_Rect dst = {
+                        cur_x * V_CELL_W + (box_w - draw_w) / 2,
+                        y * V_CELL_H + (V_CELL_H - draw_h) / 2,
+                        draw_w,
+                        draw_h
+                    };
+                    SDL_RenderCopy(g_renderer, tex, nullptr, &dst);
+                    SDL_DestroyTexture(tex);
+                }
+                SDL_FreeSurface(surf);
+            }
+        }
+        cur_x += cell.cell_w;
     }
-    SDL_FreeSurface(surf);
+
+    SDL_SetRenderTarget(g_renderer, nullptr);
     return 0;
 }
 
@@ -654,6 +706,7 @@ extern "C" errr init_android(int argc, char **argv) {
     std::vector<std::string> font_candidates = {
         files_dir + "/lib/xtra/font/NotoSansCJKjp-Regular.otf",
         files_dir + "/lib/xtra/font/NotoSansJP-Regular.ttf",
+        "/system/fonts/NotoSansMonoCJKjp-Regular.otf",
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/Roboto-Regular.ttf"
     };
@@ -688,7 +741,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Clean grid rendering active.");
+    LOGI("init_android succeeded! EUC-JP per-cell grid rendering active.");
     return 0;
 }
 
