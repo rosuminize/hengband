@@ -58,9 +58,10 @@ static term_type g_term;
 static const float ZOOM_LEVELS[] = { 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
 static int g_zoom_index = 0;
 
-// 店画面・自動キーボード状態管理
+// 店画面・自動キーボード・カメラ追随状態管理
 static bool g_in_store_screen = false;
 static bool g_auto_keyboard_shown = false;
+static bool g_center_player_applied = false;
 
 // メッセージログバッファ
 static std::deque<std::string> g_message_history;
@@ -88,7 +89,6 @@ static void set_alphabet_keyboard(bool show) {
                         jmethodID set_input_type = env->GetMethodID(tv_cls, "setInputType", "(I)V");
                         if (set_input_type) {
                             // TYPE_CLASS_TEXT (0x01) | TYPE_TEXT_VARIATION_VISIBLE_PASSWORD (0x90) | TYPE_TEXT_FLAG_NO_SUGGESTIONS (0x80000)
-                            // 日本語IMEとテンキーを封印し、QWERTY英字キーボードのみ強制表示する
                             jint flags = 0x00000001 | 0x00000090 | 0x00080000;
                             env->CallVoidMethod(text_edit, set_input_type, flags);
                         }
@@ -144,40 +144,37 @@ struct CellChar {
     int cell_w; // 1 (半角) or 2 (全角)
 };
 
-// start位置からlimitバイトまでの非ASCII連続領域が妥当なUTF-8列かを判定
-static bool is_valid_utf8_run(const char *s, int start, int limit) {
+// start位置から最大rem_cellsセル分の非ASCII連続領域が妥当なUTF-8列かを判定
+static bool is_valid_utf8_run_cells(const char *s, int start, int rem_cells) {
     int k = start;
-    bool parsed_complete = false;
+    int cells = 0;
+    bool parsed_any = false;
 
-    while (k < limit && s[k] != '\0') {
+    while (cells < rem_cells && s[k] != '\0') {
         unsigned char c1 = static_cast<unsigned char>(s[k]);
         if (c1 <= 0x7F) {
             break;
         }
 
         if ((c1 & 0xE0) == 0xC0 && c1 >= 0xC2) {
-            if (k + 2 > limit || s[k + 1] == '\0') {
-                return parsed_complete;
-            }
+            if (s[k + 1] == '\0') return false;
             unsigned char c2 = static_cast<unsigned char>(s[k + 1]);
             if ((c2 & 0xC0) != 0x80) return false;
             k += 2;
-            parsed_complete = true;
+            cells += 1;
+            parsed_any = true;
         } else if ((c1 & 0xF0) == 0xE0) {
-            if (k + 3 > limit || s[k + 1] == '\0' || s[k + 2] == '\0') {
-                return parsed_complete;
-            }
+            if (s[k + 1] == '\0' || s[k + 2] == '\0') return false;
             unsigned char c2 = static_cast<unsigned char>(s[k + 1]);
             unsigned char c3 = static_cast<unsigned char>(s[k + 2]);
             if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return false;
             if (c1 == 0xE0 && c2 < 0xA0) return false;
             if (c1 == 0xED && c2 > 0x9F) return false;
             k += 3;
-            parsed_complete = true;
+            cells += 2;
+            parsed_any = true;
         } else if ((c1 & 0xF8) == 0xF0 && c1 <= 0xF4) {
-            if (k + 4 > limit || s[k + 1] == '\0' || s[k + 2] == '\0' || s[k + 3] == '\0') {
-                return parsed_complete;
-            }
+            if (s[k + 1] == '\0' || s[k + 2] == '\0' || s[k + 3] == '\0') return false;
             unsigned char c2 = static_cast<unsigned char>(s[k + 1]);
             unsigned char c3 = static_cast<unsigned char>(s[k + 2]);
             unsigned char c4 = static_cast<unsigned char>(s[k + 3]);
@@ -185,35 +182,41 @@ static bool is_valid_utf8_run(const char *s, int start, int limit) {
             if (c1 == 0xF0 && c2 < 0x90) return false;
             if (c1 == 0xF4 && c2 > 0x8F) return false;
             k += 4;
-            parsed_complete = true;
+            cells += 2;
+            parsed_any = true;
         } else {
             return false;
         }
     }
 
-    return parsed_complete;
+    return parsed_any;
 }
 
-// バイト列 (s, n_bytes) から UTF-8 と EUC-JP を自動判別して1文字ずつ分解する
-static std::vector<CellChar> parse_mixed_bytes(const char *s, int n_bytes, std::string &out_full_utf8) {
+// セル数 n の範囲内で UTF-8 と EUC-JP を自動判別して1文字ずつ分解する
+static std::vector<CellChar> parse_mixed_cells(const char *s, int n_cells, std::string &out_full_utf8) {
     std::vector<CellChar> result;
     out_full_utf8.clear();
-    if (!s || n_bytes <= 0) return result;
+    if (!s || n_cells <= 0) return result;
 
     int i = 0;
-    while (i < n_bytes && s[i] != '\0') {
+    int cells_used = 0;
+
+    while (cells_used < n_cells && s[i] != '\0') {
         unsigned char c1 = static_cast<unsigned char>(s[i]);
 
+        // 1. ASCII (1バイト, 1セル)
         if (c1 <= 0x7F) {
             std::string ch(1, static_cast<char>(c1));
             out_full_utf8 += ch;
             result.push_back({ std::move(ch), 1 });
             i += 1;
+            cells_used += 1;
             continue;
         }
 
-        if (is_valid_utf8_run(s, i, n_bytes)) {
-            while (i < n_bytes && s[i] != '\0' && static_cast<unsigned char>(s[i]) > 0x7F) {
+        // 2. 非ASCII領域が UTF-8 として妥当な場合 -> UTF-8 として消費
+        if (is_valid_utf8_run_cells(s, i, n_cells - cells_used)) {
+            while (cells_used < n_cells && s[i] != '\0' && static_cast<unsigned char>(s[i]) > 0x7F) {
                 unsigned char uc = static_cast<unsigned char>(s[i]);
                 int u_len = 1;
                 int cw = 2;
@@ -221,16 +224,12 @@ static std::vector<CellChar> parse_mixed_bytes(const char *s, int n_bytes, std::
                 else if ((uc & 0xF0) == 0xE0) { u_len = 3; cw = 2; }
                 else if ((uc & 0xF8) == 0xF0) { u_len = 4; cw = 2; }
 
-                if (i + u_len > n_bytes) {
-                    i = n_bytes;
-                    break;
-                }
                 bool has_null = false;
                 for (int b = 0; b < u_len; ++b) {
                     if (s[i + b] == '\0') { has_null = true; break; }
                 }
-                if (has_null) {
-                    i = n_bytes;
+                if (has_null || cells_used + cw > n_cells) {
+                    cells_used = n_cells;
                     break;
                 }
 
@@ -238,49 +237,55 @@ static std::vector<CellChar> parse_mixed_bytes(const char *s, int n_bytes, std::
                 out_full_utf8 += ch;
                 result.push_back({ std::move(ch), cw });
                 i += u_len;
+                cells_used += cw;
             }
             continue;
         }
 
+        // 3. EUC-JP 領域として処理（途中で UTF-8 領域が始まったらそこで区切る）
         int euc_start = i;
         struct EucSpan {
             int cell_w;
         };
         std::vector<EucSpan> spans;
 
-        while (i < n_bytes && s[i] != '\0' && static_cast<unsigned char>(s[i]) > 0x7F) {
-            if (!spans.empty() && is_valid_utf8_run(s, i, n_bytes)) {
+        while (cells_used < n_cells && s[i] != '\0' && static_cast<unsigned char>(s[i]) > 0x7F) {
+            if (!spans.empty() && is_valid_utf8_run_cells(s, i, n_cells - cells_used)) {
                 break;
             }
 
             unsigned char ec = static_cast<unsigned char>(s[i]);
             if (ec == 0x8E) {
-                if (i + 2 <= n_bytes && s[i + 1] != '\0') {
+                if (s[i + 1] != '\0' && cells_used + 1 <= n_cells) {
                     spans.push_back({ 1 });
                     i += 2;
+                    cells_used += 1;
                 } else {
-                    i = n_bytes;
+                    cells_used = n_cells;
                     break;
                 }
             } else if (ec == 0x8F) {
-                if (i + 3 <= n_bytes && s[i + 1] != '\0' && s[i + 2] != '\0') {
+                if (s[i + 1] != '\0' && s[i + 2] != '\0' && cells_used + 2 <= n_cells) {
                     spans.push_back({ 2 });
                     i += 3;
+                    cells_used += 2;
                 } else {
-                    i = n_bytes;
+                    cells_used = n_cells;
                     break;
                 }
             } else if (ec >= 0xA1 && ec <= 0xFE) {
-                if (i + 2 <= n_bytes && s[i + 1] != '\0') {
+                if (s[i + 1] != '\0' && cells_used + 2 <= n_cells) {
                     spans.push_back({ 2 });
                     i += 2;
+                    cells_used += 2;
                 } else {
-                    i = n_bytes;
+                    cells_used = n_cells;
                     break;
                 }
             } else {
                 spans.push_back({ 1 });
                 i += 1;
+                cells_used += 1;
             }
         }
 
@@ -313,27 +318,6 @@ static std::vector<CellChar> parse_mixed_bytes(const char *s, int n_bytes, std::
     }
 
     return result;
-}
-
-// z-term の行バッファを参照し、UTF-8(3バイト=2セル)によるX座標のズレを補正した真のセルX座標を計算する
-static int get_visual_cell_x(int y, int raw_x) {
-    if (!g_term.scr || y < 0 || y >= g_term.hgt || y >= static_cast<int>(g_term.scr->c.size()) || raw_x <= 0) {
-        return raw_x;
-    }
-    const auto &row_vec = g_term.scr->c[y];
-    if (row_vec.empty()) return raw_x;
-
-    int limit = raw_x;
-    if (limit > g_term.wid) limit = g_term.wid;
-    if (limit > static_cast<int>(row_vec.size())) limit = static_cast<int>(row_vec.size());
-
-    std::string dummy;
-    auto cells = parse_mixed_bytes(row_vec.data(), limit, dummy);
-    int visual_x = 0;
-    for (const auto &c : cells) {
-        visual_x += c.cell_w;
-    }
-    return visual_x;
 }
 
 // --- バーチャルキーパッド定義 ---
@@ -549,6 +533,32 @@ static void draw_virtual_keypad() {
     }
 }
 
+// 画面全体の即時レンダリング（ズームボタン押下時の即時反映用）
+static void render_screen() {
+    if (!g_renderer || !g_term_target) return;
+
+    SDL_SetRenderTarget(g_renderer, nullptr);
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
+    SDL_RenderClear(g_renderer);
+
+    // ゲーム画面領域でクリッピングし、画面中心を基準に現在のズーム倍率で拡大描画（見切れ補正なし）
+    SDL_RenderSetClipRect(g_renderer, &g_rect_game);
+    float zoom = ZOOM_LEVELS[g_zoom_index];
+    int dst_w = static_cast<int>(g_rect_game.w * zoom);
+    int dst_h = static_cast<int>(g_rect_game.h * zoom);
+    int dst_x = g_rect_game.x + (g_rect_game.w - dst_w) / 2;
+    int dst_y = g_rect_game.y + (g_rect_game.h - dst_h) / 2;
+    SDL_Rect zoom_dst = { dst_x, dst_y, dst_w, dst_h };
+    SDL_RenderCopy(g_renderer, g_term_target, nullptr, &zoom_dst);
+    SDL_RenderSetClipRect(g_renderer, nullptr);
+
+    draw_middle_area();
+    draw_virtual_keypad();
+
+    SDL_RenderPresent(g_renderer);
+}
+
 static const VKey* hit_test_vkey(int x, int y) {
     for (const auto &btn : g_vkeys) {
         if (x >= btn.rect.x && x <= (btn.rect.x + btn.rect.w) &&
@@ -599,8 +609,9 @@ static void process_sdl_events() {
                             g_auto_keyboard_shown = false;
                         }
                     } else if (hit->special_id == 2) {
-                        // ZOOM: 1.0 -> 1.25 -> 1.5 -> 1.75 -> 2.0 -> 1.0
+                        // ZOOM: 1.0 -> 1.25 -> 1.5 -> 1.75 -> 2.0 -> 1.0 を即座に描画反映
                         g_zoom_index = (g_zoom_index + 1) % 5;
+                        render_screen();
                     }
                 } else {
                     send_key(hit->key);
@@ -705,7 +716,6 @@ static errr Term_xtra_android(int n, int v) {
             SDL_RenderClear(g_renderer);
             SDL_SetRenderTarget(g_renderer, nullptr);
         }
-        // 画面全消去＝店画面の終了・切り替えとみなして自動キーボードを閉じる
         if (g_in_store_screen) {
             g_in_store_screen = false;
             if (g_auto_keyboard_shown) {
@@ -716,28 +726,7 @@ static errr Term_xtra_android(int n, int v) {
         return 0;
 
     case TERM_XTRA_FRESH:
-        if (g_renderer && g_term_target) {
-            SDL_SetRenderTarget(g_renderer, nullptr);
-            SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(g_renderer, 8, 10, 14, 255);
-            SDL_RenderClear(g_renderer);
-
-            // ゲーム画面領域でクリッピングし、画面中心を基準に現在のズーム倍率で拡大描画（見切れ補正なし）
-            SDL_RenderSetClipRect(g_renderer, &g_rect_game);
-            float zoom = ZOOM_LEVELS[g_zoom_index];
-            int dst_w = static_cast<int>(g_rect_game.w * zoom);
-            int dst_h = static_cast<int>(g_rect_game.h * zoom);
-            int dst_x = g_rect_game.x + (g_rect_game.w - dst_w) / 2;
-            int dst_y = g_rect_game.y + (g_rect_game.h - dst_h) / 2;
-            SDL_Rect zoom_dst = { dst_x, dst_y, dst_w, dst_h };
-            SDL_RenderCopy(g_renderer, g_term_target, nullptr, &zoom_dst);
-            SDL_RenderSetClipRect(g_renderer, nullptr);
-
-            draw_middle_area();
-            draw_virtual_keypad();
-
-            SDL_RenderPresent(g_renderer);
-        }
+        render_screen();
         return 0;
 
     case TERM_XTRA_EVENT:
@@ -771,35 +760,29 @@ static errr Term_bigcurs_android(int x, int y) {
 
 // セル単位の完全クリア（足跡・ゴミの消去）
 static errr Term_wipe_android(int x, int y, int n) {
-    if (!g_renderer || !g_term_target || n <= 0) return 0;
-    int vx = get_visual_cell_x(y, x);
-    if (vx >= 80) return 0;
-    int vw = (vx + n > 80) ? (80 - vx) : n;
+    if (!g_renderer || !g_term_target || n <= 0 || x >= 80) return 0;
+    int vw = (x + n > 80) ? (80 - x) : n;
 
     SDL_SetRenderTarget(g_renderer, g_term_target);
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-    SDL_Rect r = { vx * V_CELL_W, y * V_CELL_H, vw * V_CELL_W, V_CELL_H };
+    SDL_Rect r = { x * V_CELL_W, y * V_CELL_H, vw * V_CELL_W, V_CELL_H };
     SDL_RenderFillRect(g_renderer, &r);
     SDL_SetRenderTarget(g_renderer, nullptr);
     return 0;
 }
 
-// 座標補正付き UTF-8 / EUC-JP 自動判別・1文字ずつ厳密セル配置レンダリング
+// UTF-8 / EUC-JP 自動判別・1文字ずつ厳密セル配置レンダリング
 static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
     if (!g_renderer || !g_font_game || !g_term_target || !s || n <= 0) return 0;
 
-    // 1. バイト長 n の範囲内で UTF-8 と EUC-JP を自動判別して分解
+    // 1. セル数 n の範囲内で UTF-8 と EUC-JP を自動判別して分解
     std::string full_utf8;
-    std::vector<CellChar> cells = parse_mixed_bytes(s, n, full_utf8);
+    std::vector<CellChar> cells = parse_mixed_cells(s, n, full_utf8);
 
-    // 2. 店の入退店を検知してアルファベットキーボードを自動切り替え
+    // 2. 店の入退店検知 & ゲーム画面突入時の主人公中心追随（center_player）強制適用
     if (y >= 20 && y <= 23) {
-        if (full_utf8.find("購入") != std::string::npos ||
-            full_utf8.find("売却") != std::string::npos ||
-            full_utf8.find("店から出る") != std::string::npos ||
-            full_utf8.find("置く") != std::string::npos ||
-            full_utf8.find("取る") != std::string::npos) {
+        if (full_utf8.find("購入") != std::string::npos && full_utf8.find("売却") != std::string::npos) {
             if (!g_in_store_screen) {
                 g_in_store_screen = true;
                 if (!SDL_IsTextInputActive()) {
@@ -808,8 +791,12 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
                 }
             }
         }
-    } else if (y >= 1 && y <= 5 && full_utf8.find("HP") != std::string::npos) {
-        // 通常マップのステータス欄が再描画されたら店から出たと判定して操作パネルに戻す
+    } else if (y >= 10 && y <= 14 && full_utf8.find("HP") != std::string::npos) {
+        // 通常マップのステータス欄が描画されたら店から出たと判定し、かつ主人公中心追随を有効化
+        if (!g_center_player_applied) {
+            center_player = true;
+            g_center_player_applied = true;
+        }
         if (g_in_store_screen) {
             g_in_store_screen = false;
             if (g_auto_keyboard_shown) {
@@ -834,29 +821,20 @@ static errr Term_text_android(int x, int y, int n, byte a, concptr s) {
         }
     }
 
-    // 4. UTF-8 バイト数と表示セル幅の差によるX座標ズレを補正した真の開始位置を算出
-    int vx = get_visual_cell_x(y, x);
+    // 4. 描画先セル領域を完全黒クリア
     int total_cells = 0;
     for (const auto &c : cells) {
         total_cells += c.cell_w;
     }
     int wipe_cells = (total_cells > 0) ? total_cells : n;
-
-    if (vx < 80) {
-        int vw = (vx + wipe_cells > 80) ? (80 - vx) : wipe_cells;
-        SDL_SetRenderTarget(g_renderer, g_term_target);
-        SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-        SDL_Rect r = { vx * V_CELL_W, y * V_CELL_H, vw * V_CELL_W, V_CELL_H };
-        SDL_RenderFillRect(g_renderer, &r);
-    }
+    Term_wipe_android(x, y, wipe_cells);
 
     // 5. 1文字ずつ本来のセル枠（半角=20px, 全角=40px）内に厳密配置して描画
     SDL_SetRenderTarget(g_renderer, g_term_target);
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
     SDL_Color fg = get_term_color(a);
 
-    int cur_x = vx;
+    int cur_x = x;
     for (const auto &cell : cells) {
         if (cur_x >= 80) break;
         if (cell.utf8 != " " && cell.utf8 != " ") {
@@ -892,7 +870,6 @@ extern "C" errr init_android(int argc, char **argv) {
     (void)argc; (void)argv;
     LOGI("=== init_android() called ===");
 
-    // IME の余計な変換候補・日本語予測を抑制
     SDL_SetHint(SDL_HINT_IME_INTERNAL_EDITING, "0");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
@@ -903,6 +880,9 @@ extern "C" errr init_android(int argc, char **argv) {
     if (TTF_Init() < 0) {
         LOGE("TTF_Init failed: %s", TTF_GetError());
     }
+
+    // 起動直後にキーボードが勝手に開くのを防止
+    SDL_StopTextInput();
 
     g_window = SDL_CreateWindow("Hengband Mobile",
                                 SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
@@ -954,12 +934,10 @@ extern "C" errr init_android(int argc, char **argv) {
         if (g_font_btn) break;
     }
 
-    // 常にプレイヤーを中心に画面描画するオプションをデフォルト有効化
     center_player = true;
 
-    // 内部バッファ幅はUTF-8の3バイト文字が収まるよう余裕を持たせて初期化（表示は80列）
     term_type *t = &g_term;
-    term_init(t, 160, 24, 256);
+    term_init(t, 80, 24, 256);
 
     t->init_hook = Term_init_android;
     t->nuke_hook = Term_nuke_android;
@@ -973,7 +951,7 @@ extern "C" errr init_android(int argc, char **argv) {
     term_activate(t);
     angband_terms[0] = t;
 
-    LOGI("init_android succeeded! Zoom, center_player, and store auto-alphabet-keyboard active.");
+    LOGI("init_android succeeded! 80x24 aligned, instant zoom, and center_player active.");
     return 0;
 }
 
