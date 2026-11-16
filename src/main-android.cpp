@@ -317,15 +317,18 @@ static std::vector<CellChar> parse_mixed_bytes(const char *s, int n_bytes, std::
 
 // z-term の行バッファを参照し、UTF-8(3バイト=2セル)によるX座標のズレを補正した真のセルX座標を計算する
 static int get_visual_cell_x(int y, int raw_x) {
-    if (!g_term.scr || !g_term.scr->c || y < 0 || y >= g_term.hgt || raw_x <= 0) {
+    if (!g_term.scr || y < 0 || y >= g_term.hgt || y >= static_cast<int>(g_term.scr->c.size()) || raw_x <= 0) {
         return raw_x;
     }
-    const char *row = g_term.scr->c[y];
-    if (!row) return raw_x;
+    const auto &row_vec = g_term.scr->c[y];
+    if (row_vec.empty()) return raw_x;
 
-    int limit = (raw_x < g_term.wid) ? raw_x : g_term.wid;
+    int limit = raw_x;
+    if (limit > g_term.wid) limit = g_term.wid;
+    if (limit > static_cast<int>(row_vec.size())) limit = static_cast<int>(row_vec.size());
+
     std::string dummy;
-    auto cells = parse_mixed_bytes(row, limit, dummy);
+    auto cells = parse_mixed_bytes(row_vec.data(), limit, dummy);
     int visual_x = 0;
     for (const auto &c : cells) {
         visual_x += c.cell_w;
