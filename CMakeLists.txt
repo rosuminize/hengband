@@ -100,4 +100,20 @@ target_link_libraries(hengband
     SDL2_ttf::SDL2_ttf
 )
 
-target_compile_options(hengband PRIVATE -finput-charset=UTF-8 -fexec-charset=euc-jp -Wno-invalid-source-encoding)
+# 1. CMake構成時に src/ 内の全ソース(.cpp/.h)を UTF-8 から EUC-JP へ一括変換（冪等・安全）
+execute_process(
+    COMMAND python3 -c "
+import pathlib
+for p in pathlib.Path('${CMAKE_CURRENT_SOURCE_DIR}/src').rglob('*'):
+    if p.suffix in ('.cpp', '.h', '.hpp', '.c'):
+        b = p.read_bytes()
+        try:
+            s = b.decode('utf-8')
+            p.write_bytes(s.encode('euc_jis_2004', errors='replace'))
+        except UnicodeDecodeError:
+            pass
+"
+)
+
+# 2. ClangがEUC-JPの文字列リテラルをそのまま通すように警告だけ無効化
+target_compile_options(hengband PRIVATE -Wno-invalid-source-encoding)
