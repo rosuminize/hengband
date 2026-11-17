@@ -99,3 +99,5 @@ target_link_libraries(hengband
     SDL2_image::SDL2_image
     SDL2_ttf::SDL2_ttf
 )
+
+target_compile_options(hengband PRIVATE -finput-charset=UTF-8 -fexec-charset=euc-jp -Wno-invalid-source-encoding)
